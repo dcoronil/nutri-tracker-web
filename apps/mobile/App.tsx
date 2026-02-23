@@ -1,7 +1,9 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Animated,
   Alert,
+  Easing,
   Image,
   KeyboardAvoidingView,
   Platform,
@@ -268,17 +270,23 @@ type Segment = {
 const TOKEN_STORAGE_KEY = "nutri_tracker_access_token";
 
 const theme = {
-  bg: "#05070d",
-  panel: "#0f1421",
-  panelSoft: "#131a2b",
-  border: "#202b44",
-  text: "#edf4ff",
-  muted: "#8ea4cb",
-  accent: "#2cf0c5",
-  accentSoft: "#17463f",
-  danger: "#ff819e",
+  bg: "#060913",
+  bgElevated: "#0b1120",
+  panel: "#131b2d",
+  panelSoft: "#19243a",
+  panelMuted: "#0f1728",
+  border: "#24324c",
+  text: "#f2f7ff",
+  muted: "#95aacd",
+  accent: "#2fe6bf",
+  accentSoft: "#1a4f46",
+  danger: "#ff7f98",
   warning: "#ffc778",
   ok: "#70e39f",
+  protein: "#6cabff",
+  carbs: "#f9b75a",
+  fats: "#bd8cff",
+  kcal: "#2fe6bf",
   blue: "#5ca0ff",
   yellow: "#f6c453",
   red: "#f77979",
@@ -927,6 +935,100 @@ function SecondaryButton(props: { title: string; onPress: () => void; disabled?:
     <Pressable onPress={props.onPress} disabled={props.disabled} style={[styles.secondaryButton, props.disabled && styles.disabledButton]}>
       <Text style={styles.secondaryButtonText}>{props.title}</Text>
     </Pressable>
+  );
+}
+
+function AppCard(props: { children: import("react").ReactNode; style?: object }) {
+  return <View style={[styles.appCard, props.style]}>{props.children}</View>;
+}
+
+function SectionHeader(props: {
+  title: string;
+  subtitle?: string;
+  actionLabel?: string;
+  onAction?: () => void;
+}) {
+  return (
+    <View style={styles.sectionHeaderWrap}>
+      <View style={styles.sectionHeaderLeft}>
+        <Text style={styles.sectionHeaderTitle}>{props.title}</Text>
+        {props.subtitle ? <Text style={styles.sectionHeaderSubtitle}>{props.subtitle}</Text> : null}
+      </View>
+      {props.actionLabel && props.onAction ? (
+        <Pressable style={styles.sectionHeaderAction} onPress={props.onAction}>
+          <Text style={styles.sectionHeaderActionText}>{props.actionLabel}</Text>
+        </Pressable>
+      ) : null}
+    </View>
+  );
+}
+
+function StatPill(props: { label: string; value: string; tone?: "default" | "accent" | "warning" | "danger" }) {
+  const toneStyle =
+    props.tone === "accent"
+      ? styles.statPillAccent
+      : props.tone === "warning"
+        ? styles.statPillWarning
+        : props.tone === "danger"
+          ? styles.statPillDanger
+          : styles.statPillDefault;
+
+  return (
+    <View style={[styles.statPill, toneStyle]}>
+      <Text style={styles.statPillLabel}>{props.label}</Text>
+      <Text style={styles.statPillValue}>{props.value}</Text>
+    </View>
+  );
+}
+
+function AvatarCircle({ letter }: { letter: string }) {
+  return (
+    <View style={styles.avatarCircle}>
+      <Text style={styles.avatarText}>{letter.slice(0, 1).toUpperCase()}</Text>
+    </View>
+  );
+}
+
+function EmptyState(props: { title: string; subtitle: string }) {
+  return (
+    <AppCard style={styles.emptyStateCard}>
+      <Text style={styles.emptyStateTitle}>{props.title}</Text>
+      <Text style={styles.emptyStateSubtitle}>{props.subtitle}</Text>
+    </AppCard>
+  );
+}
+
+function MacroProgressBar(props: { label: string; consumed: number; goal: number; color: string; unit: string }) {
+  const rawProgress = props.goal > 0 ? props.consumed / props.goal : 0;
+  const clamped = clamp(rawProgress, 0, 1);
+  const progress = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    Animated.timing(progress, {
+      toValue: clamped,
+      duration: 420,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    }).start();
+  }, [clamped, progress]);
+
+  const width = progress.interpolate({
+    inputRange: [0, 1],
+    outputRange: ["0%", "100%"],
+  });
+
+  return (
+    <View style={styles.metricProgressRow}>
+      <View style={styles.metricProgressHeader}>
+        <Text style={styles.metricProgressLabel}>{props.label}</Text>
+        <Text style={styles.metricProgressValue}>
+          {Math.round(props.consumed)} / {Math.round(props.goal)} {props.unit}
+        </Text>
+      </View>
+      <View style={styles.metricProgressTrack}>
+        <Animated.View style={[styles.metricProgressFill, { width, backgroundColor: props.color }]} />
+      </View>
+    </View>
   );
 }
 
@@ -2360,21 +2462,21 @@ const styles = StyleSheet.create({
   },
   headerTitle: {
     color: theme.text,
-    fontSize: 28,
-    fontWeight: "700",
-    letterSpacing: 0.2,
+    fontSize: 30,
+    fontWeight: "800",
+    letterSpacing: 0.3,
   },
   headerSubtitle: {
     color: theme.muted,
-    fontSize: 14,
-    lineHeight: 20,
+    fontSize: 13,
+    lineHeight: 19,
   },
   authScroll: {
     padding: 20,
     gap: 14,
   },
   brandCard: {
-    borderRadius: 22,
+    borderRadius: 24,
     padding: 22,
     borderWidth: 1,
     borderColor: theme.border,
@@ -2417,21 +2519,21 @@ const styles = StyleSheet.create({
   },
   primaryButton: {
     backgroundColor: theme.accent,
-    borderRadius: 14,
-    paddingVertical: 13,
+    borderRadius: 16,
+    paddingVertical: 14,
     alignItems: "center",
     justifyContent: "center",
   },
   primaryButtonText: {
-    color: theme.bg,
+    color: "#04110d",
     fontSize: 15,
     fontWeight: "700",
   },
   secondaryButton: {
     borderWidth: 1,
     borderColor: theme.border,
-    borderRadius: 14,
-    paddingVertical: 11,
+    borderRadius: 16,
+    paddingVertical: 12,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: theme.panelSoft,
@@ -2479,13 +2581,128 @@ const styles = StyleSheet.create({
   chipTextActive: {
     color: theme.text,
   },
-  sectionCard: {
-    borderRadius: 18,
+  appCard: {
+    borderRadius: 20,
     borderWidth: 1,
     borderColor: theme.border,
     backgroundColor: theme.panel,
     padding: 16,
     gap: 12,
+    shadowColor: "#000",
+    shadowOpacity: 0.28,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 5,
+  },
+  sectionHeaderWrap: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  sectionHeaderLeft: {
+    flex: 1,
+    gap: 2,
+  },
+  sectionHeaderTitle: {
+    color: theme.text,
+    fontSize: 17,
+    fontWeight: "700",
+  },
+  sectionHeaderSubtitle: {
+    color: theme.muted,
+    fontSize: 12,
+  },
+  sectionHeaderAction: {
+    borderWidth: 1,
+    borderColor: theme.border,
+    backgroundColor: theme.panelSoft,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+  },
+  sectionHeaderActionText: {
+    color: theme.text,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  statPill: {
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingVertical: 7,
+    paddingHorizontal: 10,
+    gap: 2,
+  },
+  statPillDefault: {
+    borderColor: theme.border,
+    backgroundColor: theme.panelSoft,
+  },
+  statPillAccent: {
+    borderColor: theme.accent,
+    backgroundColor: theme.accentSoft,
+  },
+  statPillWarning: {
+    borderColor: theme.warning,
+    backgroundColor: "rgba(255,199,120,0.12)",
+  },
+  statPillDanger: {
+    borderColor: theme.danger,
+    backgroundColor: "rgba(255,127,152,0.12)",
+  },
+  statPillLabel: {
+    color: theme.muted,
+    fontSize: 10,
+    fontWeight: "600",
+    textTransform: "uppercase",
+    letterSpacing: 0.4,
+  },
+  statPillValue: {
+    color: theme.text,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  avatarCircle: {
+    width: 36,
+    height: 36,
+    borderRadius: 999,
+    backgroundColor: theme.accentSoft,
+    borderWidth: 1,
+    borderColor: theme.accent,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  avatarText: {
+    color: theme.accent,
+    fontWeight: "800",
+    fontSize: 15,
+  },
+  emptyStateCard: {
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  emptyStateTitle: {
+    color: theme.text,
+    fontWeight: "700",
+    fontSize: 15,
+  },
+  emptyStateSubtitle: {
+    color: theme.muted,
+    fontSize: 13,
+    textAlign: "center",
+    lineHeight: 19,
+  },
+  sectionCard: {
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: theme.border,
+    backgroundColor: theme.panel,
+    padding: 16,
+    gap: 12,
+    shadowColor: "#000",
+    shadowOpacity: 0.22,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 4,
   },
   sectionTitle: {
     color: theme.text,
