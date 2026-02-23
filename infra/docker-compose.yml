@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: nutri-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-nutri_tracker}
+      POSTGRES_USER: ${POSTGRES_USER:-nutri}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nutri}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - nutri_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nutri} -d ${POSTGRES_DB:-nutri_tracker}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  nutri_postgres_data:
