@@ -30,7 +30,7 @@ type IntakeMethod = "grams" | "percent_pack" | "units";
 type Sex = "male" | "female" | "other";
 type ActivityLevel = "sedentary" | "light" | "moderate" | "active" | "athlete";
 type GoalType = "lose" | "maintain" | "gain";
-type MainTab = "dashboard" | "scan" | "history" | "settings";
+type MainTab = "dashboard" | "scan" | "progress" | "history" | "settings";
 type AuthStackScreen = "welcome" | "signup" | "login";
 type OnboardingStep = 1 | 2 | 3;
 
@@ -76,6 +76,41 @@ type GoalFeedback = {
 
 type DailyGoalResponse = GoalPayload & {
   feedback: GoalFeedback;
+};
+
+type BodyWeightLog = {
+  id: number;
+  weight_kg: number;
+  note: string | null;
+  created_at: string;
+};
+
+type BodyMeasurementLog = {
+  id: number;
+  waist_cm: number | null;
+  neck_cm: number | null;
+  hip_cm: number | null;
+  chest_cm: number | null;
+  arm_cm: number | null;
+  thigh_cm: number | null;
+  created_at: string;
+};
+
+type BodyTrendPoint = {
+  date: string;
+  weight_kg: number;
+};
+
+type BodySummary = {
+  latest_weight_kg: number | null;
+  weekly_change_kg: number | null;
+  bmi: number | null;
+  bmi_category: string;
+  body_fat_percent: number | null;
+  body_fat_category: string;
+  needs_weight_checkin: boolean;
+  trend_points: BodyTrendPoint[];
+  hints: string[];
 };
 
 type Product = {
@@ -257,6 +292,19 @@ type AuthContextValue = {
     quantity_units?: number;
     percent_pack?: number;
   }) => Promise<Intake>;
+  fetchBodySummary: () => Promise<BodySummary>;
+  fetchWeightLogs: (limit?: number) => Promise<BodyWeightLog[]>;
+  createWeightLog: (payload: { weight_kg: number; note?: string; created_at?: string }) => Promise<BodyWeightLog>;
+  fetchMeasurementLogs: (limit?: number) => Promise<BodyMeasurementLog[]>;
+  createMeasurementLog: (payload: {
+    waist_cm?: number;
+    neck_cm?: number;
+    hip_cm?: number;
+    chest_cm?: number;
+    arm_cm?: number;
+    thigh_cm?: number;
+    created_at?: string;
+  }) => Promise<BodyMeasurementLog>;
   setApiBaseUrl: (url: string) => void;
   checkHealth: (url?: string) => Promise<boolean>;
 };
@@ -816,6 +864,47 @@ function AuthProvider({ children }: { children: import("react").ReactNode }) {
     [request],
   );
 
+  const fetchBodySummary = useCallback(async (): Promise<BodySummary> => request<BodySummary>("/body/summary"), [request]);
+
+  const fetchWeightLogs = useCallback(
+    async (limit = 120): Promise<BodyWeightLog[]> => request<BodyWeightLog[]>(`/body/weight-logs?limit=${limit}`),
+    [request],
+  );
+
+  const createWeightLog = useCallback(
+    async (payload: { weight_kg: number; note?: string; created_at?: string }): Promise<BodyWeightLog> =>
+      request<BodyWeightLog>("/body/weight-logs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      }),
+    [request],
+  );
+
+  const fetchMeasurementLogs = useCallback(
+    async (limit = 120): Promise<BodyMeasurementLog[]> =>
+      request<BodyMeasurementLog[]>(`/body/measurement-logs?limit=${limit}`),
+    [request],
+  );
+
+  const createMeasurementLog = useCallback(
+    async (payload: {
+      waist_cm?: number;
+      neck_cm?: number;
+      hip_cm?: number;
+      chest_cm?: number;
+      arm_cm?: number;
+      thigh_cm?: number;
+      created_at?: string;
+    }): Promise<BodyMeasurementLog> =>
+      request<BodyMeasurementLog>("/body/measurement-logs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      }),
+    [request],
+  );
+
   const value = useMemo<AuthContextValue>(
     () => ({
       loading,
@@ -841,6 +930,11 @@ function AuthProvider({ children }: { children: import("react").ReactNode }) {
       lookupByBarcode,
       createProductFromLabel,
       createIntake,
+      fetchBodySummary,
+      fetchWeightLogs,
+      createWeightLog,
+      fetchMeasurementLogs,
+      createMeasurementLog,
       setApiBaseUrl: (url: string) => setApiBaseUrl(normalizeBaseUrl(url)),
       checkHealth,
     }),
@@ -849,11 +943,16 @@ function AuthProvider({ children }: { children: import("react").ReactNode }) {
       checkHealth,
       clearPendingVerification,
       createIntake,
+      createMeasurementLog,
+      createWeightLog,
       createProductFromLabel,
       fetchAnalysis,
+      fetchBodySummary,
       fetchCalendar,
       fetchDaySummary,
+      fetchMeasurementLogs,
       fetchGoal,
+      fetchWeightLogs,
       loading,
       login,
       logout,
@@ -1673,7 +1772,7 @@ function MacroDonut({ segments, title }: { segments: Segment[]; title: string })
   );
 }
 
-function DashboardScreen() {
+function DashboardScreen({ onOpenBodyProgress }: { onOpenBodyProgress: () => void }) {
   const auth = useAuth();
   const [selectedDate, setSelectedDate] = useState(formatDateLocal(new Date()));
   const [monthKey, setMonthKey] = useState(formatMonth(new Date()));
@@ -1781,7 +1880,7 @@ function DashboardScreen() {
             </Text>
             <Text style={styles.dashboardDate}>{selectedDate}</Text>
           </View>
-          <Pressable style={styles.quickWeightBtn} onPress={() => Alert.alert("Peso", "En el siguiente bloque añadimos registro rápido.")}>
+          <Pressable style={styles.quickWeightBtn} onPress={onOpenBodyProgress}>
             <Text style={styles.quickWeightBtnText}>+</Text>
           </Pressable>
           <AvatarCircle letter={displayName.slice(0, 1)} />
@@ -1896,7 +1995,12 @@ function DashboardScreen() {
         <MacroDonut segments={segments} title="Distribución de macros consumidos" />
 
         <AppCard>
-          <SectionHeader title="Seguimiento corporal" subtitle="Estado actual" actionLabel="Registrar peso" onAction={() => Alert.alert("Peso", "En el siguiente bloque añadimos formulario y gráfica.")} />
+          <SectionHeader
+            title="Seguimiento corporal"
+            subtitle="Estado actual"
+            actionLabel="Registrar peso"
+            onAction={onOpenBodyProgress}
+          />
           <View style={styles.bodyStatsRow}>
             <StatPill label="Peso" value={auth.profile ? `${auth.profile.weight_kg} kg` : "-"} tone="accent" />
             <StatPill label="IMC" value={auth.profile?.bmi ? auth.profile.bmi.toFixed(1) : "-"} />
@@ -1991,6 +2095,197 @@ function DashboardScreen() {
               <Text style={styles.helperText}>{insight}</Text>
             </View>
           ))}
+        </AppCard>
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
+
+function BodyProgressScreen() {
+  const auth = useAuth();
+  const [loading, setLoading] = useState(true);
+  const [savingWeight, setSavingWeight] = useState(false);
+  const [savingMeasure, setSavingMeasure] = useState(false);
+  const [range, setRange] = useState<"7d" | "30d" | "90d">("30d");
+
+  const [summary, setSummary] = useState<BodySummary | null>(null);
+  const [weightLogs, setWeightLogs] = useState<BodyWeightLog[]>([]);
+  const [measurementLogs, setMeasurementLogs] = useState<BodyMeasurementLog[]>([]);
+
+  const [weightInput, setWeightInput] = useState("");
+  const [weightNote, setWeightNote] = useState("");
+  const [waistInput, setWaistInput] = useState("");
+  const [neckInput, setNeckInput] = useState("");
+  const [hipInput, setHipInput] = useState("");
+
+  const reload = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [nextSummary, nextWeights, nextMeasurements] = await Promise.all([
+        auth.fetchBodySummary(),
+        auth.fetchWeightLogs(180),
+        auth.fetchMeasurementLogs(180),
+      ]);
+      setSummary(nextSummary);
+      setWeightLogs(nextWeights);
+      setMeasurementLogs(nextMeasurements);
+    } catch (error) {
+      Alert.alert("Progreso corporal", parseApiError(error));
+    } finally {
+      setLoading(false);
+    }
+  }, [auth]);
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  const filteredWeightLogs = useMemo(() => {
+    const days = range === "7d" ? 7 : range === "30d" ? 30 : 90;
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - days);
+    return [...weightLogs]
+      .filter((row) => new Date(row.created_at) >= cutoff)
+      .sort((a, b) => +new Date(a.created_at) - +new Date(b.created_at));
+  }, [range, weightLogs]);
+
+  const chartStats = useMemo(() => {
+    if (filteredWeightLogs.length === 0) {
+      return { min: 0, max: 0 };
+    }
+    const values = filteredWeightLogs.map((row) => row.weight_kg);
+    return { min: Math.min(...values), max: Math.max(...values) };
+  }, [filteredWeightLogs]);
+
+  const saveWeight = async () => {
+    const value = toPositiveNumberOrNull(weightInput);
+    if (!value) {
+      Alert.alert("Peso", "Introduce un peso válido.");
+      return;
+    }
+    setSavingWeight(true);
+    try {
+      await auth.createWeightLog({ weight_kg: value, note: weightNote.trim() || undefined });
+      setWeightInput("");
+      setWeightNote("");
+      await reload();
+    } catch (error) {
+      Alert.alert("Peso", parseApiError(error));
+    } finally {
+      setSavingWeight(false);
+    }
+  };
+
+  const saveMeasurement = async () => {
+    const payload = {
+      waist_cm: toOptionalNumber(waistInput) ?? undefined,
+      neck_cm: toOptionalNumber(neckInput) ?? undefined,
+      hip_cm: toOptionalNumber(hipInput) ?? undefined,
+    };
+    if (!payload.waist_cm && !payload.neck_cm && !payload.hip_cm) {
+      Alert.alert("Medidas", "Añade al menos una medida.");
+      return;
+    }
+    setSavingMeasure(true);
+    try {
+      await auth.createMeasurementLog(payload);
+      setWaistInput("");
+      setNeckInput("");
+      setHipInput("");
+      await reload();
+    } catch (error) {
+      Alert.alert("Medidas", parseApiError(error));
+    } finally {
+      setSavingMeasure(false);
+    }
+  };
+
+  return (
+    <SafeAreaView style={styles.screen}>
+      <ScrollView contentContainerStyle={styles.mainScroll}>
+        <SectionHeader title="Progreso corporal" subtitle="Peso, IMC y composición" actionLabel="Recargar" onAction={() => void reload()} />
+
+        <AppCard>
+          <SectionHeader title="Resumen actual" subtitle="Visión de un vistazo" />
+          <View style={styles.bodyStatsRow}>
+            <StatPill label="Peso actual" value={summary?.latest_weight_kg ? `${summary.latest_weight_kg.toFixed(1)} kg` : "N/D"} tone="accent" />
+            <StatPill
+              label="Cambio semanal"
+              value={summary?.weekly_change_kg != null ? `${summary.weekly_change_kg > 0 ? "+" : ""}${summary.weekly_change_kg.toFixed(2)} kg` : "N/D"}
+              tone={summary?.weekly_change_kg && summary.weekly_change_kg > 0 ? "warning" : "default"}
+            />
+            <StatPill label="IMC" value={summary?.bmi ? summary.bmi.toFixed(1) : "N/D"} />
+            <StatPill label="% grasa" value={summary?.body_fat_percent ? `${summary.body_fat_percent.toFixed(1)}%` : "N/D"} />
+          </View>
+          {summary?.needs_weight_checkin ? (
+            <Text style={styles.helperText}>Recomendación: registra peso al menos 1 vez por semana.</Text>
+          ) : null}
+        </AppCard>
+
+        <AppCard>
+          <SectionHeader title="Tendencia de peso" subtitle="7/30/90 días" />
+          <View style={styles.macroToggleRow}>
+            {(["7d", "30d", "90d"] as const).map((option) => (
+              <Pressable
+                key={option}
+                onPress={() => setRange(option)}
+                style={[styles.macroToggleChip, range === option && styles.macroToggleChipActive]}
+              >
+                <Text style={[styles.macroToggleText, range === option && styles.macroToggleTextActive]}>{option}</Text>
+              </Pressable>
+            ))}
+          </View>
+
+          {loading ? (
+            <ActivityIndicator color={theme.accent} />
+          ) : filteredWeightLogs.length === 0 ? (
+            <EmptyState title="Sin registros de peso" subtitle="Añade tu primer peso para ver la tendencia." />
+          ) : (
+            <View style={styles.weightChartWrap}>
+              {filteredWeightLogs.slice(-16).map((entry) => {
+                const min = chartStats.min;
+                const max = chartStats.max;
+                const ratio = max - min <= 0 ? 1 : (entry.weight_kg - min) / (max - min);
+                const height = 24 + ratio * 86;
+                return (
+                  <View key={entry.id} style={styles.weightBarCol}>
+                    <View style={[styles.weightBar, { height }]} />
+                    <Text style={styles.weightBarLabel}>{new Date(entry.created_at).getDate()}</Text>
+                  </View>
+                );
+              })}
+            </View>
+          )}
+        </AppCard>
+
+        <AppCard>
+          <SectionHeader title="Registrar peso" subtitle="Entrada rápida" />
+          <InputField label="Peso (kg)" value={weightInput} onChangeText={setWeightInput} keyboardType="numeric" />
+          <InputField label="Nota (opcional)" value={weightNote} onChangeText={setWeightNote} />
+          <PrimaryButton title="Guardar peso" onPress={() => void saveWeight()} loading={savingWeight} />
+        </AppCard>
+
+        <AppCard>
+          <SectionHeader title="Registrar medidas" subtitle="Opcional para % grasa más preciso" />
+          <InputField label="Cintura (cm)" value={waistInput} onChangeText={setWaistInput} keyboardType="numeric" />
+          <InputField label="Cuello (cm)" value={neckInput} onChangeText={setNeckInput} keyboardType="numeric" />
+          <InputField label="Cadera (cm)" value={hipInput} onChangeText={setHipInput} keyboardType="numeric" />
+          <PrimaryButton title="Guardar medidas" onPress={() => void saveMeasurement()} loading={savingMeasure} />
+          <Text style={styles.helperText}>Registros de medidas: {measurementLogs.length}</Text>
+        </AppCard>
+
+        <AppCard>
+          <SectionHeader title="Coach hints" subtitle="Reglas simples basadas en tu día" />
+          {(summary?.hints ?? []).length === 0 ? (
+            <EmptyState title="Sin alertas" subtitle="Tus métricas actuales no generan avisos." />
+          ) : (
+            (summary?.hints ?? []).map((hint) => (
+              <View key={hint} style={styles.insightRow}>
+                <View style={styles.insightDot} />
+                <Text style={styles.helperText}>{hint}</Text>
+              </View>
+            ))
+          )}
         </AppCard>
       </ScrollView>
     </SafeAreaView>
@@ -2481,8 +2776,9 @@ function MainAppTabs() {
   return (
     <SafeAreaView style={styles.screen}>
       <View style={styles.flex1}>
-        {tab === "dashboard" ? <DashboardScreen /> : null}
+        {tab === "dashboard" ? <DashboardScreen onOpenBodyProgress={() => setTab("progress")} /> : null}
         {tab === "scan" ? <ScanScreen /> : null}
+        {tab === "progress" ? <BodyProgressScreen /> : null}
         {tab === "history" ? <HistoryScreen /> : null}
         {tab === "settings" ? <SettingsScreen /> : null}
       </View>
@@ -2491,6 +2787,7 @@ function MainAppTabs() {
         {([
           ["dashboard", "Dashboard"],
           ["scan", "Scan"],
+          ["progress", "Progress"],
           ["history", "History"],
           ["settings", "Settings"],
         ] as Array<[MainTab, string]>).map(([value, label]) => {
@@ -2981,6 +3278,34 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 8,
+  },
+  weightChartWrap: {
+    minHeight: 126,
+    borderWidth: 1,
+    borderColor: theme.border,
+    borderRadius: 14,
+    backgroundColor: theme.panelSoft,
+    padding: 10,
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: 6,
+  },
+  weightBarCol: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "flex-end",
+    gap: 4,
+  },
+  weightBar: {
+    width: "90%",
+    borderRadius: 6,
+    backgroundColor: theme.accent,
+    minHeight: 10,
+  },
+  weightBarLabel: {
+    color: theme.muted,
+    fontSize: 10,
+    fontWeight: "600",
   },
   rowWrap: {
     flexDirection: "row",
