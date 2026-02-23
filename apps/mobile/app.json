@@ -8,7 +8,7 @@
       "ios",
       "android"
     ],
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "dark",
     "plugins": [
       "expo-asset"
     ]
