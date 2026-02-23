@@ -95,6 +95,7 @@ class Product(SQLModel, table=True):
     barcode: str | None = Field(default=None, unique=True, index=True, max_length=32)
     name: str = Field(max_length=256)
     brand: str | None = Field(default=None, max_length=128)
+    image_url: str | None = Field(default=None, max_length=1024)
     nutrition_basis: NutritionBasis = Field(default=NutritionBasis.per_100g)
     serving_size_g: float | None = Field(default=None, ge=0)
     net_weight_g: float | None = Field(default=None, ge=0)

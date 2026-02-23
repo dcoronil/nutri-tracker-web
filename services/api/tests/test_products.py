@@ -27,6 +27,7 @@ def test_lookup_openfoodfacts_import(monkeypatch, client, auth_headers):
             "barcode": "76111111",
             "name": "Barrita",
             "brand": "Demo",
+            "image_url": "https://images.openfoodfacts.org/images/products/761/111/11/front_es.3.400.jpg",
             "nutrition_basis": NutritionBasis.per_100g,
             "serving_size_g": 30,
             "net_weight_g": 90,
@@ -47,6 +48,7 @@ def test_lookup_openfoodfacts_import(monkeypatch, client, auth_headers):
     body = response.json()
     assert body["source"] == "openfoodfacts_imported"
     assert body["product"]["barcode"] == "76111111"
+    assert body["product"]["image_url"] is not None
 
 
 def test_label_photo_missing_fields(client, auth_headers):

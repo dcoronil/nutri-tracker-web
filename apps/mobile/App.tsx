@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import {
   ActivityIndicator,
   Alert,
+  Image,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -80,6 +81,7 @@ type Product = {
   barcode: string | null;
   name: string;
   brand: string | null;
+  image_url: string | null;
   nutrition_basis: NutritionBasis;
   serving_size_g: number | null;
   net_weight_g: number | null;
@@ -2205,6 +2207,13 @@ function ScanScreen() {
             <View style={styles.sectionCard}>
               <Text style={styles.sectionTitle}>{product.name}</Text>
               <Text style={styles.helperText}>Marca: {product.brand ?? "-"}</Text>
+              {product.image_url ? (
+                <Image source={{ uri: product.image_url }} style={styles.productImage} resizeMode="contain" />
+              ) : (
+                <View style={styles.productImagePlaceholder}>
+                  <Text style={styles.helperText}>Sin foto disponible para este producto</Text>
+                </View>
+              )}
               <Text style={styles.helperText}>
                 {product.kcal} kcal | P {product.protein_g} | G {product.fat_g} | C {product.carbs_g} ({product.nutrition_basis})
               </Text>
@@ -2864,6 +2873,25 @@ const styles = StyleSheet.create({
   scanPane: {
     paddingBottom: 100,
     gap: 12,
+  },
+  productImage: {
+    width: "100%",
+    height: 180,
+    borderWidth: 1,
+    borderColor: theme.border,
+    borderRadius: 12,
+    backgroundColor: "#090d16",
+  },
+  productImagePlaceholder: {
+    width: "100%",
+    height: 120,
+    borderWidth: 1,
+    borderColor: theme.border,
+    borderRadius: 12,
+    backgroundColor: theme.panelSoft,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 12,
   },
   methodRow: {
     flexDirection: "row",

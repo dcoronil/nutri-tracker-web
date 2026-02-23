@@ -68,6 +68,7 @@ def extract_product_from_openfoodfacts_payload(payload: dict[str, Any]) -> dict[
         "barcode": product.get("code"),
         "name": product.get("product_name") or "Producto sin nombre",
         "brand": (product.get("brands") or "").split(",")[0].strip() or None,
+        "image_url": product.get("image_front_url") or product.get("image_url"),
         "nutrition_basis": basis,
         "serving_size_g": _to_float(product.get("serving_quantity")),
         "net_weight_g": _to_float(product.get("product_quantity")),

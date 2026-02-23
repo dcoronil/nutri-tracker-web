@@ -467,6 +467,17 @@ async def product_by_barcode(
 
     local = session.exec(select(Product).where(Product.barcode == ean)).first()
     if local:
+        if not local.image_url:
+            try:
+                off_for_image = await fetch_openfoodfacts_product(ean)
+            except OpenFoodFactsClientError:
+                off_for_image = None
+            if off_for_image and off_for_image.get("image_url"):
+                local.image_url = off_for_image["image_url"]
+                session.add(local)
+                session.commit()
+                session.refresh(local)
+
         pref = session.exec(
             select(UserProductPreference)
             .where(UserProductPreference.user_id == current_user.id)
@@ -498,6 +509,7 @@ async def product_by_barcode(
         barcode=ean,
         name=off_product["name"],
         brand=off_product.get("brand"),
+        image_url=off_product.get("image_url"),
         nutrition_basis=off_product["nutrition_basis"],
         serving_size_g=off_product.get("serving_size_g"),
         net_weight_g=off_product.get("net_weight_g"),
@@ -525,6 +537,7 @@ async def create_product_from_label_photo(
     barcode: Annotated[str | None, Form()] = None,
     name: Annotated[str | None, Form()] = None,
     brand: Annotated[str | None, Form()] = None,
+    image_url: Annotated[str | None, Form()] = None,
     nutrition_basis: Annotated[NutritionBasis | None, Form()] = None,
     serving_size_g: Annotated[float | None, Form()] = None,
     net_weight_g: Annotated[float | None, Form()] = None,
@@ -532,6 +545,7 @@ async def create_product_from_label_photo(
     photos: Annotated[list[UploadFile] | None, File()] = None,
 ) -> LabelPhotoResponse:
     del current_user
+    image_url_clean = image_url.strip() if image_url and image_url.strip() else None
 
     photo_files = photos or []
     extracted_text = (label_text or "").strip()
@@ -573,6 +587,8 @@ async def create_product_from_label_photo(
     if existing:
         existing.name = name
         existing.brand = brand
+        if image_url is not None:
+            existing.image_url = image_url_clean
         existing.nutrition_basis = payload["nutrition_basis"]
         existing.serving_size_g = payload.get("serving_size_g")
         existing.net_weight_g = payload.get("net_weight_g")
@@ -591,6 +607,7 @@ async def create_product_from_label_photo(
             barcode=barcode,
             name=name,
             brand=brand,
+            image_url=image_url_clean,
             nutrition_basis=payload["nutrition_basis"],
             serving_size_g=payload.get("serving_size_g"),
             net_weight_g=payload.get("net_weight_g"),

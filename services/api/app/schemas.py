@@ -108,6 +108,7 @@ class ProductRead(BaseModel):
     barcode: str | None
     name: str
     brand: str | None
+    image_url: str | None
     nutrition_basis: NutritionBasis
     serving_size_g: float | None
     net_weight_g: float | None
