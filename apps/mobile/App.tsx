@@ -2527,8 +2527,87 @@ function HistoryScreen() {
 
 function SettingsScreen() {
   const auth = useAuth();
+  const today = useMemo(() => formatDateLocal(new Date()), []);
   const [apiDraft, setApiDraft] = useState(auth.apiBaseUrl);
   const [checking, setChecking] = useState(false);
+  const [savingGoals, setSavingGoals] = useState(false);
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [loadingMeta, setLoadingMeta] = useState(false);
+  const [themeMode, setThemeMode] = useState<"dark" | "light">("dark");
+  const [unitMode, setUnitMode] = useState<"metric" | "imperial">("metric");
+
+  const [goalDraft, setGoalDraft] = useState({
+    kcal_goal: "",
+    protein_goal: "",
+    fat_goal: "",
+    carbs_goal: "",
+  });
+  const [recommendedGoal, setRecommendedGoal] = useState<GoalPayload | null>(null);
+  const [bodyHints, setBodyHints] = useState<string[]>([]);
+
+  const [profileDraft, setProfileDraft] = useState({
+    weight_kg: auth.profile?.weight_kg ? String(auth.profile.weight_kg) : "",
+    height_cm: auth.profile?.height_cm ? String(auth.profile.height_cm) : "",
+    age: auth.profile?.age ? String(auth.profile.age) : "",
+    sex: auth.profile?.sex ?? "other",
+    activity_level: auth.profile?.activity_level ?? "moderate",
+    goal_type: auth.profile?.goal_type ?? "maintain",
+    waist_cm: auth.profile?.waist_cm ? String(auth.profile.waist_cm) : "",
+    neck_cm: auth.profile?.neck_cm ? String(auth.profile.neck_cm) : "",
+    hip_cm: auth.profile?.hip_cm ? String(auth.profile.hip_cm) : "",
+  });
+
+  useEffect(() => {
+    setProfileDraft({
+      weight_kg: auth.profile?.weight_kg ? String(auth.profile.weight_kg) : "",
+      height_cm: auth.profile?.height_cm ? String(auth.profile.height_cm) : "",
+      age: auth.profile?.age ? String(auth.profile.age) : "",
+      sex: auth.profile?.sex ?? "other",
+      activity_level: auth.profile?.activity_level ?? "moderate",
+      goal_type: auth.profile?.goal_type ?? "maintain",
+      waist_cm: auth.profile?.waist_cm ? String(auth.profile.waist_cm) : "",
+      neck_cm: auth.profile?.neck_cm ? String(auth.profile.neck_cm) : "",
+      hip_cm: auth.profile?.hip_cm ? String(auth.profile.hip_cm) : "",
+    });
+  }, [auth.profile]);
+
+  const loadMeta = useCallback(async () => {
+    setLoadingMeta(true);
+    try {
+      const [goalResponse, analysis, bodySummary] = await Promise.all([
+        auth.fetchGoal(today),
+        auth.fetchAnalysis(today),
+        auth.fetchBodySummary(),
+      ]);
+
+      setRecommendedGoal(analysis.recommended_goal);
+      setBodyHints(bodySummary.hints);
+
+      if (goalResponse) {
+        setGoalDraft({
+          kcal_goal: String(goalResponse.kcal_goal),
+          protein_goal: String(goalResponse.protein_goal),
+          fat_goal: String(goalResponse.fat_goal),
+          carbs_goal: String(goalResponse.carbs_goal),
+        });
+      } else {
+        setGoalDraft({
+          kcal_goal: String(analysis.recommended_goal.kcal_goal),
+          protein_goal: String(analysis.recommended_goal.protein_goal),
+          fat_goal: String(analysis.recommended_goal.fat_goal),
+          carbs_goal: String(analysis.recommended_goal.carbs_goal),
+        });
+      }
+    } catch (error) {
+      Alert.alert("Settings", parseApiError(error));
+    } finally {
+      setLoadingMeta(false);
+    }
+  }, [auth, today]);
+
+  useEffect(() => {
+    void loadMeta();
+  }, [loadMeta]);
 
   const applyApi = async () => {
     const normalized = normalizeBaseUrl(apiDraft);
@@ -2550,24 +2629,267 @@ function SettingsScreen() {
     Alert.alert("API", "Conexión OK.");
   };
 
+  const saveGoals = async () => {
+    const payload = {
+      kcal_goal: Number(goalDraft.kcal_goal),
+      protein_goal: Number(goalDraft.protein_goal),
+      fat_goal: Number(goalDraft.fat_goal),
+      carbs_goal: Number(goalDraft.carbs_goal),
+    };
+    if (!payload.kcal_goal || !payload.protein_goal || !payload.fat_goal || !payload.carbs_goal) {
+      Alert.alert("Objetivos", "Revisa los valores.");
+      return;
+    }
+    setSavingGoals(true);
+    try {
+      await auth.saveGoal(today, payload);
+      Alert.alert("Objetivos", "Objetivos guardados.");
+      await loadMeta();
+    } catch (error) {
+      Alert.alert("Objetivos", parseApiError(error));
+    } finally {
+      setSavingGoals(false);
+    }
+  };
+
+  const useRecommendedGoals = () => {
+    if (!recommendedGoal) {
+      return;
+    }
+    setGoalDraft({
+      kcal_goal: String(recommendedGoal.kcal_goal),
+      protein_goal: String(recommendedGoal.protein_goal),
+      fat_goal: String(recommendedGoal.fat_goal),
+      carbs_goal: String(recommendedGoal.carbs_goal),
+    });
+  };
+
+  const saveProfile = async () => {
+    const weight = toPositiveNumberOrNull(profileDraft.weight_kg);
+    const height = toPositiveNumberOrNull(profileDraft.height_cm);
+    if (!weight || !height) {
+      Alert.alert("Perfil", "Peso y altura son obligatorios.");
+      return;
+    }
+
+    setSavingProfile(true);
+    try {
+      await auth.saveProfile({
+        weight_kg: weight,
+        height_cm: height,
+        age: profileDraft.age.trim() ? Number(profileDraft.age) : null,
+        sex: profileDraft.sex,
+        activity_level: profileDraft.activity_level,
+        goal_type: profileDraft.goal_type,
+        waist_cm: toOptionalNumber(profileDraft.waist_cm),
+        neck_cm: toOptionalNumber(profileDraft.neck_cm),
+        hip_cm: toOptionalNumber(profileDraft.hip_cm),
+        chest_cm: null,
+        arm_cm: null,
+        thigh_cm: null,
+      });
+      Alert.alert("Perfil", "Perfil actualizado.");
+      await loadMeta();
+    } catch (error) {
+      Alert.alert("Perfil", parseApiError(error));
+    } finally {
+      setSavingProfile(false);
+    }
+  };
+
+  const exportData = async () => {
+    try {
+      const [summary, weights, measurements, body] = await Promise.all([
+        auth.fetchDaySummary(today),
+        auth.fetchWeightLogs(365),
+        auth.fetchMeasurementLogs(365),
+        auth.fetchBodySummary(),
+      ]);
+
+      const payload = {
+        exported_at: new Date().toISOString(),
+        today,
+        summary,
+        weights,
+        measurements,
+        body,
+      };
+      const text = JSON.stringify(payload);
+      console.log("NUTRI_EXPORT_JSON", text);
+      Alert.alert("Datos", `Export JSON generado (${Math.round(text.length / 1024)} KB). Revisar consola del bundler.`);
+    } catch (error) {
+      Alert.alert("Datos", parseApiError(error));
+    }
+  };
+
   return (
     <SafeAreaView style={styles.screen}>
       <ScrollView contentContainerStyle={styles.mainScroll}>
-        <AppHeader title="Settings" subtitle="Cuenta y red" />
+        <AppHeader title="Settings" subtitle="Cuenta, objetivos, perfil y app" />
 
-        <View style={styles.sectionCard}>
-          <Text style={styles.sectionTitle}>Cuenta</Text>
+        <AppCard>
+          <SectionHeader title="Cuenta" subtitle="Estado de autenticación" />
           <Text style={styles.helperText}>{auth.user?.email}</Text>
           <Text style={styles.helperText}>email_verified: {String(auth.user?.email_verified ?? false)}</Text>
           <Text style={styles.helperText}>onboarding_completed: {String(auth.user?.onboarding_completed ?? false)}</Text>
           <SecondaryButton title="Cerrar sesión" onPress={() => void auth.logout()} />
-        </View>
+        </AppCard>
 
-        <View style={styles.sectionCard}>
+        <AppCard>
+          <SectionHeader
+            title="Objetivos diarios"
+            subtitle="Ajusta kcal/proteína/grasa/carbs"
+            actionLabel="Recalcular recomendación"
+            onAction={useRecommendedGoals}
+          />
+          {loadingMeta ? <ActivityIndicator color={theme.accent} /> : null}
+          <InputField
+            label="Kcal"
+            value={goalDraft.kcal_goal}
+            onChangeText={(value) => setGoalDraft((current) => ({ ...current, kcal_goal: value }))}
+            keyboardType="numeric"
+          />
+          <InputField
+            label="Proteína (g)"
+            value={goalDraft.protein_goal}
+            onChangeText={(value) => setGoalDraft((current) => ({ ...current, protein_goal: value }))}
+            keyboardType="numeric"
+          />
+          <InputField
+            label="Grasa (g)"
+            value={goalDraft.fat_goal}
+            onChangeText={(value) => setGoalDraft((current) => ({ ...current, fat_goal: value }))}
+            keyboardType="numeric"
+          />
+          <InputField
+            label="Carbs (g)"
+            value={goalDraft.carbs_goal}
+            onChangeText={(value) => setGoalDraft((current) => ({ ...current, carbs_goal: value }))}
+            keyboardType="numeric"
+          />
+          {recommendedGoal ? (
+            <Text style={styles.helperText}>
+              Recomendado: {recommendedGoal.kcal_goal} kcal | P {recommendedGoal.protein_goal} | G {recommendedGoal.fat_goal} | C{" "}
+              {recommendedGoal.carbs_goal}
+            </Text>
+          ) : null}
+          <PrimaryButton title="Guardar objetivos" onPress={() => void saveGoals()} loading={savingGoals} />
+        </AppCard>
+
+        <AppCard>
+          <SectionHeader title="Perfil corporal" subtitle="Datos base para cálculos" />
+          <InputField
+            label="Peso (kg)"
+            value={profileDraft.weight_kg}
+            onChangeText={(value) => setProfileDraft((current) => ({ ...current, weight_kg: value }))}
+            keyboardType="numeric"
+          />
+          <InputField
+            label="Altura (cm)"
+            value={profileDraft.height_cm}
+            onChangeText={(value) => setProfileDraft((current) => ({ ...current, height_cm: value }))}
+            keyboardType="numeric"
+          />
+          <InputField
+            label="Edad"
+            value={profileDraft.age}
+            onChangeText={(value) => setProfileDraft((current) => ({ ...current, age: value }))}
+            keyboardType="numeric"
+          />
+          <ChoiceRow
+            label="Sexo"
+            value={profileDraft.sex}
+            onChange={(value) => setProfileDraft((current) => ({ ...current, sex: value }))}
+            options={[
+              { label: "Masculino", value: "male" },
+              { label: "Femenino", value: "female" },
+              { label: "Otro", value: "other" },
+            ]}
+          />
+          <ChoiceRow
+            label="Actividad"
+            value={profileDraft.activity_level}
+            onChange={(value) => setProfileDraft((current) => ({ ...current, activity_level: value }))}
+            options={[
+              { label: "Sedentario", value: "sedentary" },
+              { label: "Ligero", value: "light" },
+              { label: "Moderado", value: "moderate" },
+              { label: "Activo", value: "active" },
+              { label: "Atleta", value: "athlete" },
+            ]}
+          />
+          <ChoiceRow
+            label="Objetivo"
+            value={profileDraft.goal_type}
+            onChange={(value) => setProfileDraft((current) => ({ ...current, goal_type: value }))}
+            options={[
+              { label: "Perder", value: "lose" },
+              { label: "Mantener", value: "maintain" },
+              { label: "Ganar", value: "gain" },
+            ]}
+          />
+          <InputField
+            label="Cintura (cm)"
+            value={profileDraft.waist_cm}
+            onChangeText={(value) => setProfileDraft((current) => ({ ...current, waist_cm: value }))}
+            keyboardType="numeric"
+          />
+          <InputField
+            label="Cuello (cm)"
+            value={profileDraft.neck_cm}
+            onChangeText={(value) => setProfileDraft((current) => ({ ...current, neck_cm: value }))}
+            keyboardType="numeric"
+          />
+          <InputField
+            label="Cadera (cm)"
+            value={profileDraft.hip_cm}
+            onChangeText={(value) => setProfileDraft((current) => ({ ...current, hip_cm: value }))}
+            keyboardType="numeric"
+          />
+          <PrimaryButton title="Guardar perfil" onPress={() => void saveProfile()} loading={savingProfile} />
+        </AppCard>
+
+        <AppCard>
+          <SectionHeader title="App" subtitle="Conectividad y preferencias" />
           <Text style={styles.sectionTitle}>API base URL</Text>
           <InputField label="URL" value={apiDraft} onChangeText={setApiDraft} autoCapitalize="none" />
           <PrimaryButton title="Guardar y probar" onPress={() => void applyApi()} loading={checking} />
-        </View>
+          <ChoiceRow
+            label="Tema"
+            value={themeMode}
+            onChange={setThemeMode}
+            options={[
+              { label: "Dark", value: "dark" },
+              { label: "Light (futuro)", value: "light" },
+            ]}
+          />
+          <ChoiceRow
+            label="Unidades"
+            value={unitMode}
+            onChange={setUnitMode}
+            options={[
+              { label: "Métrico", value: "metric" },
+              { label: "Imperial (futuro)", value: "imperial" },
+            ]}
+          />
+        </AppCard>
+
+        <AppCard>
+          <SectionHeader title="Datos" subtitle="Exportación y utilidades" />
+          <SecondaryButton title="Exportar datos JSON" onPress={() => void exportData()} />
+          <SecondaryButton title="Reset demo data (stub)" onPress={() => Alert.alert("Datos", "Stub listo. Pendiente endpoint de borrado seguro.")} />
+          <SectionHeader title="Coach hints activos" />
+          {bodyHints.length ? (
+            bodyHints.map((hint) => (
+              <View key={hint} style={styles.insightRow}>
+                <View style={styles.insightDot} />
+                <Text style={styles.helperText}>{hint}</Text>
+              </View>
+            ))
+          ) : (
+            <Text style={styles.helperText}>Sin hints críticos por ahora.</Text>
+          )}
+        </AppCard>
       </ScrollView>
     </SafeAreaView>
   );
