@@ -318,26 +318,26 @@ type Segment = {
 const TOKEN_STORAGE_KEY = "nutri_tracker_access_token";
 
 const theme = {
-  bg: "#060913",
-  bgElevated: "#0b1120",
-  panel: "#131b2d",
-  panelSoft: "#19243a",
-  panelMuted: "#0f1728",
-  border: "#24324c",
-  text: "#f2f7ff",
-  muted: "#95aacd",
-  accent: "#2fe6bf",
-  accentSoft: "#1a4f46",
-  danger: "#ff7f98",
-  warning: "#ffc778",
-  ok: "#70e39f",
-  protein: "#6cabff",
-  carbs: "#f9b75a",
-  fats: "#bd8cff",
-  kcal: "#2fe6bf",
-  blue: "#5ca0ff",
-  yellow: "#f6c453",
-  red: "#f77979",
+  bg: "#050505",
+  bgElevated: "#0c0c0c",
+  panel: "#121212",
+  panelSoft: "#181818",
+  panelMuted: "#1f1f1f",
+  border: "#2a2a2a",
+  text: "#f5f5f5",
+  muted: "#a3a3a3",
+  accent: "#ffffff",
+  accentSoft: "#262626",
+  danger: "#f48f8f",
+  warning: "#f1d08e",
+  ok: "#a9d8bb",
+  protein: "#d4d4d4",
+  carbs: "#c2c2c2",
+  fats: "#b1b1b1",
+  kcal: "#ffffff",
+  blue: "#b8b8b8",
+  yellow: "#dcdcdc",
+  red: "#f48f8f",
 };
 
 const authContext = createContext<AuthContextValue | undefined>(undefined);
@@ -1076,6 +1076,32 @@ function StatPill(props: { label: string; value: string; tone?: "default" | "acc
     <View style={[styles.statPill, toneStyle]}>
       <Text style={styles.statPillLabel}>{props.label}</Text>
       <Text style={styles.statPillValue}>{props.value}</Text>
+    </View>
+  );
+}
+
+function TagChip(props: { label: string; tone?: "default" | "accent" | "warning" | "danger" }) {
+  const toneStyle =
+    props.tone === "accent"
+      ? styles.tagChipAccent
+      : props.tone === "warning"
+        ? styles.tagChipWarning
+        : props.tone === "danger"
+          ? styles.tagChipDanger
+          : styles.tagChipDefault;
+
+  return (
+    <View style={[styles.tagChip, toneStyle]}>
+      <Text style={styles.tagChipLabel}>{props.label}</Text>
+    </View>
+  );
+}
+
+function StatRow(props: { label: string; value: string }) {
+  return (
+    <View style={styles.statRow}>
+      <Text style={styles.statRowLabel}>{props.label}</Text>
+      <Text style={styles.statRowValue}>{props.value}</Text>
     </View>
   );
 }
@@ -1901,10 +1927,9 @@ function DashboardScreen({ onOpenBodyProgress }: { onOpenBodyProgress: () => voi
             />
           </View>
           <View style={styles.heroPillsRow}>
-            <StatPill label="Estado" value={exceededKcal ? "Sobre objetivo" : "En rango"} tone={exceededKcal ? "danger" : "accent"} />
-            <StatPill
-              label="Registros"
-              value={String(summary?.intakes.length ?? 0)}
+            <TagChip label={exceededKcal ? "Sobre objetivo" : "En rango"} tone={exceededKcal ? "danger" : "accent"} />
+            <TagChip
+              label={`${summary?.intakes.length ?? 0} registro${(summary?.intakes.length ?? 0) === 1 ? "" : "s"}`}
               tone={summary?.intakes.length ? "default" : "warning"}
             />
           </View>
@@ -2729,9 +2754,9 @@ function SettingsScreen() {
 
         <AppCard>
           <SectionHeader title="Cuenta" subtitle="Estado de autenticación" />
-          <Text style={styles.helperText}>{auth.user?.email}</Text>
-          <Text style={styles.helperText}>email_verified: {String(auth.user?.email_verified ?? false)}</Text>
-          <Text style={styles.helperText}>onboarding_completed: {String(auth.user?.onboarding_completed ?? false)}</Text>
+          <StatRow label="Email" value={auth.user?.email ?? "-"} />
+          <StatRow label="Email verificado" value={auth.user?.email_verified ? "Sí" : "No"} />
+          <StatRow label="Onboarding" value={auth.user?.onboarding_completed ? "Completado" : "Pendiente"} />
           <SecondaryButton title="Cerrar sesión" onPress={() => void auth.logout()} />
         </AppCard>
 
@@ -3518,18 +3543,18 @@ const styles = StyleSheet.create({
     gap: 14,
   },
   brandCard: {
-    borderRadius: 24,
-    padding: 22,
+    borderRadius: 28,
+    padding: 24,
     borderWidth: 1,
     borderColor: theme.border,
     backgroundColor: theme.panel,
-    gap: 10,
+    gap: 12,
   },
   brandEyebrow: {
     color: theme.accent,
     fontWeight: "700",
-    letterSpacing: 2,
-    fontSize: 11,
+    letterSpacing: 1.8,
+    fontSize: 12,
   },
   brandTitle: {
     color: theme.text,
@@ -3561,13 +3586,15 @@ const styles = StyleSheet.create({
   },
   primaryButton: {
     backgroundColor: theme.accent,
+    borderWidth: 1,
+    borderColor: theme.accent,
     borderRadius: 16,
-    paddingVertical: 14,
+    paddingVertical: 15,
     alignItems: "center",
     justifyContent: "center",
   },
   primaryButtonText: {
-    color: "#04110d",
+    color: "#050505",
     fontSize: 15,
     fontWeight: "700",
   },
@@ -3624,17 +3651,17 @@ const styles = StyleSheet.create({
     color: theme.text,
   },
   appCard: {
-    borderRadius: 20,
+    borderRadius: 24,
     borderWidth: 1,
     borderColor: theme.border,
     backgroundColor: theme.panel,
-    padding: 16,
-    gap: 12,
+    padding: 18,
+    gap: 14,
     shadowColor: "#000",
-    shadowOpacity: 0.28,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 10 },
-    elevation: 5,
+    shadowOpacity: 0.22,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 3,
   },
   sectionHeaderWrap: {
     flexDirection: "row",
@@ -3680,16 +3707,65 @@ const styles = StyleSheet.create({
     backgroundColor: theme.panelSoft,
   },
   statPillAccent: {
-    borderColor: theme.accent,
-    backgroundColor: theme.accentSoft,
+    borderColor: "#525252",
+    backgroundColor: "#252525",
   },
   statPillWarning: {
     borderColor: theme.warning,
-    backgroundColor: "rgba(255,199,120,0.12)",
+    backgroundColor: "rgba(241,208,142,0.12)",
   },
   statPillDanger: {
     borderColor: theme.danger,
-    backgroundColor: "rgba(255,127,152,0.12)",
+    backgroundColor: "rgba(244,143,143,0.12)",
+  },
+  tagChip: {
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderWidth: 1,
+  },
+  tagChipDefault: {
+    borderColor: theme.border,
+    backgroundColor: theme.panelSoft,
+  },
+  tagChipAccent: {
+    borderColor: "#4a4a4a",
+    backgroundColor: "#232323",
+  },
+  tagChipWarning: {
+    borderColor: theme.warning,
+    backgroundColor: "rgba(241,208,142,0.1)",
+  },
+  tagChipDanger: {
+    borderColor: theme.danger,
+    backgroundColor: "rgba(244,143,143,0.1)",
+  },
+  tagChipLabel: {
+    color: theme.text,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  statRow: {
+    borderWidth: 1,
+    borderColor: theme.border,
+    borderRadius: 12,
+    backgroundColor: theme.panelSoft,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 8,
+  },
+  statRowLabel: {
+    color: theme.muted,
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  statRowValue: {
+    color: theme.text,
+    fontSize: 13,
+    fontWeight: "700",
   },
   statPillLabel: {
     color: theme.muted,
@@ -3707,14 +3783,14 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 999,
-    backgroundColor: theme.accentSoft,
+    backgroundColor: theme.panelSoft,
     borderWidth: 1,
-    borderColor: theme.accent,
+    borderColor: "#3e3e3e",
     alignItems: "center",
     justifyContent: "center",
   },
   avatarText: {
-    color: theme.accent,
+    color: theme.text,
     fontWeight: "800",
     fontSize: 15,
   },
@@ -3734,17 +3810,17 @@ const styles = StyleSheet.create({
     lineHeight: 19,
   },
   sectionCard: {
-    borderRadius: 20,
+    borderRadius: 24,
     borderWidth: 1,
     borderColor: theme.border,
     backgroundColor: theme.panel,
-    padding: 16,
-    gap: 12,
+    padding: 18,
+    gap: 14,
     shadowColor: "#000",
-    shadowOpacity: 0.22,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 4,
+    shadowOpacity: 0.18,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 5 },
+    elevation: 2,
   },
   sectionTitle: {
     color: theme.text,
@@ -3861,7 +3937,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   quickWeightBtnText: {
-    color: theme.accent,
+    color: theme.text,
     fontWeight: "800",
     fontSize: 20,
     marginTop: -1,
@@ -3912,8 +3988,8 @@ const styles = StyleSheet.create({
     paddingVertical: 7,
   },
   macroToggleChipActive: {
-    borderColor: theme.accent,
-    backgroundColor: theme.accentSoft,
+    borderColor: "#525252",
+    backgroundColor: "#252525",
   },
   macroToggleText: {
     color: theme.muted,
@@ -4112,8 +4188,8 @@ const styles = StyleSheet.create({
     backgroundColor: theme.panelSoft,
   },
   calendarCellActive: {
-    borderColor: theme.accent,
-    backgroundColor: theme.accentSoft,
+    borderColor: "#4d4d4d",
+    backgroundColor: "#252525",
   },
   calendarCellText: {
     color: theme.text,
@@ -4121,14 +4197,14 @@ const styles = StyleSheet.create({
     fontSize: 12,
   },
   calendarCellTextActive: {
-    color: theme.accent,
+    color: theme.text,
   },
   calendarDot: {
     marginTop: 4,
     width: 6,
     height: 6,
     borderRadius: 999,
-    backgroundColor: theme.accent,
+    backgroundColor: "#fafafa",
   },
   calendarCellEmpty: {
     width: "13.2%",
@@ -4170,7 +4246,7 @@ const styles = StyleSheet.create({
     fontSize: 12,
   },
   intakeKcal: {
-    color: theme.accent,
+    color: theme.text,
     fontWeight: "700",
     fontSize: 13,
   },
@@ -4184,7 +4260,7 @@ const styles = StyleSheet.create({
     height: 8,
     borderRadius: 999,
     marginTop: 6,
-    backgroundColor: theme.accent,
+    backgroundColor: "#fafafa",
   },
   historyRow: {
     flexDirection: "row",
@@ -4280,7 +4356,7 @@ const styles = StyleSheet.create({
     width: "82%",
     height: 160,
     borderWidth: 2,
-    borderColor: "rgba(44,240,197,0.95)",
+    borderColor: "rgba(255,255,255,0.9)",
     borderRadius: 16,
     backgroundColor: "rgba(0,0,0,0.12)",
     position: "relative",
@@ -4289,7 +4365,7 @@ const styles = StyleSheet.create({
     position: "absolute",
     width: 22,
     height: 22,
-    borderColor: theme.accent,
+    borderColor: "#ffffff",
   },
   scanCornerTopLeft: {
     top: -2,
@@ -4332,11 +4408,11 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: theme.accent,
-    backgroundColor: theme.accentSoft,
+    borderColor: "#ffffff",
+    backgroundColor: "#272727",
   },
   scanSuccessBadgeText: {
-    color: theme.accent,
+    color: "#ffffff",
     fontWeight: "800",
     letterSpacing: 1,
   },
@@ -4465,7 +4541,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   tabItemActive: {
-    backgroundColor: theme.accentSoft,
+    backgroundColor: "#252525",
   },
   tabText: {
     color: theme.muted,
@@ -4473,6 +4549,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
   },
   tabTextActive: {
-    color: theme.accent,
+    color: theme.text,
   },
 });
