@@ -30,7 +30,8 @@ type IntakeMethod = "grams" | "percent_pack" | "units";
 type Sex = "male" | "female" | "other";
 type ActivityLevel = "sedentary" | "light" | "moderate" | "active" | "athlete";
 type GoalType = "lose" | "maintain" | "gain";
-type MainTab = "dashboard" | "scan" | "progress" | "history" | "settings";
+type MainTab = "dashboard" | "add" | "progress" | "history" | "settings";
+type AddMode = "hub" | "barcode" | "label_fix" | "meal_photo" | "manual";
 type AuthStackScreen = "welcome" | "signup" | "login";
 type OnboardingStep = 1 | 2 | 3;
 
@@ -279,7 +280,7 @@ type AuthContextValue = {
   fetchCalendar: (yearMonth: string) => Promise<CalendarMonthResponse>;
   lookupByBarcode: (ean: string) => Promise<ProductLookupResponse>;
   createProductFromLabel: (input: {
-    barcode: string;
+    barcode?: string;
     name: string;
     brand: string;
     labelText: string;
@@ -811,14 +812,16 @@ function AuthProvider({ children }: { children: import("react").ReactNode }) {
 
   const createProductFromLabel = useCallback(
     async (input: {
-      barcode: string;
+      barcode?: string;
       name: string;
       brand: string;
       labelText: string;
       photos: string[];
     }): Promise<LabelPhotoResponse> => {
       const form = new FormData();
-      form.append("barcode", input.barcode);
+      if (input.barcode?.trim()) {
+        form.append("barcode", input.barcode.trim());
+      }
       form.append("name", input.name);
       if (input.brand.trim()) {
         form.append("brand", input.brand.trim());
@@ -1154,6 +1157,19 @@ function MacroProgressBar(props: { label: string; consumed: number; goal: number
         <Animated.View style={[styles.metricProgressFill, { width, backgroundColor: props.color }]} />
       </View>
     </View>
+  );
+}
+
+function AddActionCard(props: {
+  title: string;
+  subtitle: string;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable style={styles.addActionCard} onPress={props.onPress}>
+      <Text style={styles.addActionTitle}>{props.title}</Text>
+      <Text style={styles.addActionSubtitle}>{props.subtitle}</Text>
+    </Pressable>
   );
 }
 
@@ -2953,9 +2969,10 @@ function QuantityMethodSelector(props: {
   );
 }
 
-function ScanScreen() {
+function AddScreen() {
   const auth = useAuth();
   const [permission, requestPermission] = useCameraPermissions();
+  const [mode, setMode] = useState<AddMode>("hub");
   const [scanLocked, setScanLocked] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [scanSuccessFlash, setScanSuccessFlash] = useState(false);
@@ -2971,11 +2988,114 @@ function ScanScreen() {
   const [labelPhotos, setLabelPhotos] = useState<string[]>([]);
   const [labelQuestions, setLabelQuestions] = useState<string[]>([]);
 
+  const [mealDescription, setMealDescription] = useState("");
+  const [mealPhotos, setMealPhotos] = useState<string[]>([]);
+
+  const [manualName, setManualName] = useState("");
+  const [manualBrand, setManualBrand] = useState("");
+  const [manualKcal, setManualKcal] = useState("");
+  const [manualProtein, setManualProtein] = useState("");
+  const [manualFat, setManualFat] = useState("");
+  const [manualCarbs, setManualCarbs] = useState("");
+
   const [method, setMethod] = useState<IntakeMethod>("grams");
   const [grams, setGrams] = useState(120);
   const [units, setUnits] = useState(1);
   const [percentPack, setPercentPack] = useState(25);
   const [saving, setSaving] = useState(false);
+
+  const hasCamera = permission?.granted ?? false;
+
+  const requestCameraAndUnlock = useCallback(async () => {
+    const granted = permission?.granted ?? false;
+    if (granted) {
+      return;
+    }
+
+    const result = await requestPermission();
+    if (!result.granted) {
+      Alert.alert("Permisos", "Activa permiso de cámara para usar el escáner.");
+    }
+  }, [permission?.granted, requestPermission]);
+
+  const resetScanState = useCallback(() => {
+    setPhase("camera");
+    setScanLocked(false);
+    setProcessing(false);
+    setScanSuccessFlash(false);
+    setProduct(null);
+    setPreferredServing(null);
+    setBarcode("");
+    setLabelName("");
+    setLabelBrand("");
+    setLabelText("");
+    setLabelPhotos([]);
+    setLabelQuestions([]);
+    setMethod("grams");
+    setGrams(120);
+    setUnits(1);
+    setPercentPack(25);
+  }, []);
+
+  const resetToHub = useCallback(() => {
+    resetScanState();
+    setMode("hub");
+  }, [resetScanState]);
+
+  const prefillFromPreference = useCallback((nextProduct: Product, pref: ProductPreference | null) => {
+    if (!pref) {
+      if (nextProduct.serving_size_g) {
+        setMethod("units");
+        setUnits(1);
+      } else {
+        setMethod("grams");
+        setGrams(120);
+      }
+      return;
+    }
+
+    setMethod(pref.method);
+    if (pref.quantity_g) {
+      setGrams(pref.quantity_g);
+    }
+    if (pref.quantity_units) {
+      setUnits(pref.quantity_units);
+    }
+    if (pref.percent_pack) {
+      setPercentPack(pref.percent_pack);
+    }
+  }, []);
+
+  const startBarcodeFlow = async () => {
+    resetScanState();
+    setMode("barcode");
+    setPhase("camera");
+    await requestCameraAndUnlock();
+  };
+
+  const startLabelFlow = () => {
+    resetScanState();
+    setMode("label_fix");
+    setPhase("label");
+  };
+
+  const startMealFlow = () => {
+    resetScanState();
+    setMealDescription("");
+    setMealPhotos([]);
+    setMode("meal_photo");
+  };
+
+  const startManualFlow = () => {
+    resetScanState();
+    setManualName("");
+    setManualBrand("");
+    setManualKcal("");
+    setManualProtein("");
+    setManualFat("");
+    setManualCarbs("");
+    setMode("manual");
+  };
 
   const resolvedQuantityG = useMemo(() => {
     if (!product) {
@@ -3012,48 +3132,6 @@ function ScanScreen() {
       fats: Math.round(product.fat_g * factor * 10) / 10,
     };
   }, [product, resolvedQuantityG]);
-
-  const resetToCamera = () => {
-    setPhase("camera");
-    setScanLocked(false);
-    setProcessing(false);
-    setScanSuccessFlash(false);
-    setProduct(null);
-    setPreferredServing(null);
-    setLabelName("");
-    setLabelBrand("");
-    setLabelText("");
-    setLabelPhotos([]);
-    setLabelQuestions([]);
-    setMethod("grams");
-    setGrams(120);
-    setUnits(1);
-    setPercentPack(25);
-  };
-
-  const prefillFromPreference = (nextProduct: Product, pref: ProductPreference | null) => {
-    if (!pref) {
-      if (nextProduct.serving_size_g) {
-        setMethod("units");
-        setUnits(1);
-      } else {
-        setMethod("grams");
-        setGrams(120);
-      }
-      return;
-    }
-
-    setMethod(pref.method);
-    if (pref.quantity_g) {
-      setGrams(pref.quantity_g);
-    }
-    if (pref.quantity_units) {
-      setUnits(pref.quantity_units);
-    }
-    if (pref.percent_pack) {
-      setPercentPack(pref.percent_pack);
-    }
-  };
 
   const handleScan = async (result: BarcodeScanningResult) => {
     if (scanLocked) {
@@ -3092,7 +3170,7 @@ function ScanScreen() {
         setPhase("label");
       }
     } catch (error) {
-      Alert.alert("Scan", parseApiError(error));
+      Alert.alert("Escáner", parseApiError(error));
       setScanLocked(false);
       setPhase("camera");
     } finally {
@@ -3116,12 +3194,21 @@ function ScanScreen() {
     setLabelPhotos((current) => [...current, firstAsset.uri]);
   };
 
-  const createFromLabel = async () => {
-    if (!barcode.trim()) {
-      Alert.alert("Barcode", "No hay barcode activo.");
+  const captureMealPhoto = async () => {
+    const permissionResult = await ImagePicker.requestCameraPermissionsAsync();
+    if (!permissionResult.granted) {
+      Alert.alert("Permisos", "Necesitas permisos de cámara para capturar comida.");
       return;
     }
+    const result = await ImagePicker.launchCameraAsync({ quality: 0.75, allowsEditing: false });
+    const firstAsset = result.canceled ? null : result.assets[0];
+    if (!firstAsset?.uri) {
+      return;
+    }
+    setMealPhotos((current) => [...current, firstAsset.uri]);
+  };
 
+  const createFromLabel = async () => {
     if (!labelName.trim()) {
       Alert.alert("Producto", "Indica nombre del producto.");
       return;
@@ -3130,7 +3217,7 @@ function ScanScreen() {
     setSaving(true);
     try {
       const response = await auth.createProductFromLabel({
-        barcode,
+        barcode: barcode.trim() || undefined,
         name: labelName.trim(),
         brand: labelBrand.trim(),
         labelText: labelText.trim(),
@@ -3138,7 +3225,7 @@ function ScanScreen() {
       });
 
       if (!response.created || !response.product) {
-        const questions = response.questions.join("\n") || "No se pudo crear el producto.";
+        const questions = response.questions.join("\n") || "No se pudo crear/actualizar el producto.";
         Alert.alert("Etiqueta", questions);
         setLabelQuestions(response.questions);
         return;
@@ -3146,9 +3233,52 @@ function ScanScreen() {
 
       setProduct(response.product);
       prefillFromPreference(response.product, preferredServing);
+      setMode("barcode");
       setPhase("quantity");
     } catch (error) {
       Alert.alert("Etiqueta", parseApiError(error));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const saveManualProduct = async () => {
+    const kcal = Number(manualKcal);
+    const protein = Number(manualProtein);
+    const fat = Number(manualFat);
+    const carbs = Number(manualCarbs);
+
+    if (!manualName.trim()) {
+      Alert.alert("Manual", "El nombre es obligatorio.");
+      return;
+    }
+    if (![kcal, protein, fat, carbs].every((value) => Number.isFinite(value) && value >= 0)) {
+      Alert.alert("Manual", "Completa macros válidos por 100 g.");
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const syntheticLabel = `Por 100 g Energía ${kcal} kcal Proteínas ${protein} g Grasas ${fat} g Carbohidratos ${carbs} g`;
+      const response = await auth.createProductFromLabel({
+        name: manualName.trim(),
+        brand: manualBrand.trim(),
+        labelText: syntheticLabel,
+        photos: [],
+      });
+
+      if (!response.created || !response.product) {
+        Alert.alert("Manual", response.questions.join("\n") || "No se pudo crear el producto manual.");
+        return;
+      }
+
+      setProduct(response.product);
+      setMode("barcode");
+      setPhase("quantity");
+      setMethod("grams");
+      setGrams(120);
+    } catch (error) {
+      Alert.alert("Manual", parseApiError(error));
     } finally {
       setSaving(false);
     }
@@ -3170,7 +3300,7 @@ function ScanScreen() {
       }
 
       Alert.alert("Consumo", "Intake guardado correctamente.");
-      resetToCamera();
+      resetToHub();
     } catch (error) {
       Alert.alert("Consumo", parseApiError(error));
     } finally {
@@ -3178,24 +3308,8 @@ function ScanScreen() {
     }
   };
 
-  const requestCameraAndUnlock = async () => {
-    const granted = permission?.granted ?? false;
-    if (granted) {
-      return;
-    }
-
-    const result = await requestPermission();
-    if (!result.granted) {
-      Alert.alert("Permisos", "Activa permiso de cámara para escanear.");
-    }
-  };
-
   useEffect(() => {
-    void requestCameraAndUnlock();
-  }, []);
-
-  useEffect(() => {
-    if (phase !== "camera") {
+    if (mode !== "barcode" || phase !== "camera") {
       return;
     }
     const loop = Animated.loop(
@@ -3216,7 +3330,7 @@ function ScanScreen() {
     );
     loop.start();
     return () => loop.stop();
-  }, [phase, scanPulse]);
+  }, [mode, phase, scanPulse]);
 
   useEffect(() => {
     if (!scanSuccessFlash) {
@@ -3226,14 +3340,50 @@ function ScanScreen() {
     return () => clearTimeout(timer);
   }, [scanSuccessFlash]);
 
-  const hasCamera = permission?.granted ?? false;
+  const subtitle =
+    mode === "hub"
+      ? "Escáner, etiqueta, foto de comida o carga manual"
+      : mode === "barcode"
+        ? "Escáner de código de barras"
+        : mode === "label_fix"
+          ? "Corregir o añadir datos nutricionales por etiqueta"
+          : mode === "meal_photo"
+            ? "Estimación guiada de plato (en el siguiente bloque)"
+            : "Carga manual rápida de producto";
+
+  const showLabelForm = mode === "label_fix" || (mode === "barcode" && phase === "label");
 
   return (
     <SafeAreaView style={styles.screen}>
       <View style={styles.scanContainer}>
-        <AppHeader title="Scan" subtitle="Solo cámara: centra el barcode dentro del rectángulo" />
+        <AppHeader title="Añadir" subtitle={subtitle} />
 
-        {phase === "camera" ? (
+        {mode === "hub" ? (
+          <ScrollView contentContainerStyle={styles.addHubPane}>
+            <AddActionCard
+              title="Escanear código de barras"
+              subtitle="Busca en BD/OpenFoodFacts y registra cantidad"
+              onPress={() => void startBarcodeFlow()}
+            />
+            <AddActionCard
+              title="Corregir etiqueta nutricional"
+              subtitle="Sube foto de etiqueta para actualizar valores"
+              onPress={startLabelFlow}
+            />
+            <AddActionCard
+              title="Estimar comida por foto"
+              subtitle="Foto + descripción con estimación conservadora"
+              onPress={startMealFlow}
+            />
+            <AddActionCard
+              title="Añadir manualmente"
+              subtitle="Crea producto rápido con macros por 100 g"
+              onPress={startManualFlow}
+            />
+          </ScrollView>
+        ) : null}
+
+        {mode === "barcode" && phase === "camera" ? (
           <View style={styles.scanCameraWrap}>
             {hasCamera ? (
               <CameraView
@@ -3286,11 +3436,23 @@ function ScanScreen() {
           </View>
         ) : null}
 
-        {phase === "label" ? (
+        {showLabelForm ? (
           <ScrollView contentContainerStyle={styles.scanPane} keyboardShouldPersistTaps="handled">
             <View style={styles.sectionCard}>
-              <Text style={styles.sectionTitle}>Producto no encontrado o incompleto</Text>
-              <Text style={styles.helperText}>Barcode detectado: {barcode}</Text>
+              <Text style={styles.sectionTitle}>
+                {mode === "label_fix" ? "Corregir valores con foto de etiqueta" : "Producto no encontrado o incompleto"}
+              </Text>
+
+              <InputField
+                label="Barcode (opcional)"
+                value={barcode}
+                onChangeText={setBarcode}
+                keyboardType="numeric"
+                placeholder="EAN/UPC"
+              />
+              <InputField label="Nombre" value={labelName} onChangeText={setLabelName} />
+              <InputField label="Marca" value={labelBrand} onChangeText={setLabelBrand} />
+              <InputField label="Texto etiqueta (opcional)" value={labelText} onChangeText={setLabelText} />
 
               {labelQuestions.map((question) => (
                 <Text key={question} style={styles.helperText}>
@@ -3298,20 +3460,66 @@ function ScanScreen() {
                 </Text>
               ))}
 
-              <InputField label="Nombre" value={labelName} onChangeText={setLabelName} />
-              <InputField label="Marca" value={labelBrand} onChangeText={setLabelBrand} />
-              <InputField label="Texto etiqueta (opcional)" value={labelText} onChangeText={setLabelText} />
-
               <SecondaryButton title="Tomar foto de etiqueta" onPress={() => void captureLabelPhoto()} />
               <Text style={styles.helperText}>{labelPhotos.length} foto(s) adjuntas</Text>
 
-              <PrimaryButton title="Crear producto" onPress={() => void createFromLabel()} loading={saving} />
-              <SecondaryButton title="Cancelar" onPress={resetToCamera} disabled={saving} />
+              <PrimaryButton
+                title={mode === "label_fix" ? "Procesar y actualizar" : "Crear producto"}
+                onPress={() => void createFromLabel()}
+                loading={saving}
+              />
+              <SecondaryButton title="Volver" onPress={resetToHub} disabled={saving} />
             </View>
           </ScrollView>
         ) : null}
 
-        {phase === "quantity" && product ? (
+        {mode === "meal_photo" ? (
+          <ScrollView contentContainerStyle={styles.scanPane} keyboardShouldPersistTaps="handled">
+            <View style={styles.sectionCard}>
+              <Text style={styles.sectionTitle}>Estimar comida por foto</Text>
+              <Text style={styles.helperText}>
+                Captura una foto del plato y añade una descripción breve. En el siguiente bloque se conectará a la estimación
+                backend conservadora.
+              </Text>
+              <InputField
+                label="Descripción (recomendada)"
+                value={mealDescription}
+                onChangeText={setMealDescription}
+                placeholder="Ej: arroz con pollo y mayonesa"
+              />
+              <SecondaryButton title="Tomar foto de comida" onPress={() => void captureMealPhoto()} />
+              <Text style={styles.helperText}>{mealPhotos.length} foto(s) adjuntas</Text>
+              <PrimaryButton
+                title="Continuar con estimación"
+                onPress={() => Alert.alert("Estimación", "Se habilita en el siguiente bloque (backend + confirmación).")}
+              />
+              <SecondaryButton title="Volver" onPress={resetToHub} />
+            </View>
+          </ScrollView>
+        ) : null}
+
+        {mode === "manual" ? (
+          <ScrollView contentContainerStyle={styles.scanPane} keyboardShouldPersistTaps="handled">
+            <View style={styles.sectionCard}>
+              <Text style={styles.sectionTitle}>Añadir manualmente</Text>
+              <InputField label="Nombre" value={manualName} onChangeText={setManualName} placeholder="Producto manual" />
+              <InputField label="Marca (opcional)" value={manualBrand} onChangeText={setManualBrand} />
+              <InputField label="Kcal por 100 g" value={manualKcal} onChangeText={setManualKcal} keyboardType="numeric" />
+              <InputField
+                label="Proteína por 100 g"
+                value={manualProtein}
+                onChangeText={setManualProtein}
+                keyboardType="numeric"
+              />
+              <InputField label="Grasa por 100 g" value={manualFat} onChangeText={setManualFat} keyboardType="numeric" />
+              <InputField label="Carbs por 100 g" value={manualCarbs} onChangeText={setManualCarbs} keyboardType="numeric" />
+              <PrimaryButton title="Crear producto manual" onPress={() => void saveManualProduct()} loading={saving} />
+              <SecondaryButton title="Volver" onPress={resetToHub} disabled={saving} />
+            </View>
+          </ScrollView>
+        ) : null}
+
+        {mode === "barcode" && phase === "quantity" && product ? (
           <ScrollView contentContainerStyle={styles.scanPane} keyboardShouldPersistTaps="handled">
             <View style={styles.sectionCard}>
               <Text style={styles.sectionTitle}>{product.name}</Text>
@@ -3438,7 +3646,8 @@ function ScanScreen() {
               </AppCard>
 
               <PrimaryButton title="Guardar consumo" onPress={() => void saveIntake()} loading={saving} />
-              <SecondaryButton title="Escanear otro" onPress={resetToCamera} disabled={saving} />
+              <SecondaryButton title="Escanear otro" onPress={() => void startBarcodeFlow()} disabled={saving} />
+              <SecondaryButton title="Volver a Añadir" onPress={resetToHub} disabled={saving} />
             </View>
           </ScrollView>
         ) : null}
@@ -3454,7 +3663,7 @@ function MainAppTabs() {
     <SafeAreaView style={styles.screen}>
       <View style={styles.flex1}>
         {tab === "dashboard" ? <DashboardScreen onOpenBodyProgress={() => setTab("progress")} /> : null}
-        {tab === "scan" ? <ScanScreen /> : null}
+        {tab === "add" ? <AddScreen /> : null}
         {tab === "progress" ? <BodyProgressScreen /> : null}
         {tab === "history" ? <HistoryScreen /> : null}
         {tab === "settings" ? <SettingsScreen /> : null}
@@ -3463,7 +3672,7 @@ function MainAppTabs() {
       <View style={styles.tabBar}>
         {([
           ["dashboard", "Dashboard"],
-          ["scan", "Scan"],
+          ["add", "Añadir"],
           ["progress", "Progress"],
           ["history", "History"],
           ["settings", "Settings"],
@@ -4330,6 +4539,29 @@ const styles = StyleSheet.create({
     color: theme.muted,
     fontSize: 12,
     fontWeight: "600",
+  },
+  addHubPane: {
+    gap: 12,
+    paddingBottom: 100,
+  },
+  addActionCard: {
+    borderWidth: 1,
+    borderColor: theme.border,
+    borderRadius: 18,
+    backgroundColor: theme.panel,
+    paddingHorizontal: 16,
+    paddingVertical: 18,
+    gap: 6,
+  },
+  addActionTitle: {
+    color: theme.text,
+    fontSize: 16,
+    fontWeight: "700",
+  },
+  addActionSubtitle: {
+    color: theme.muted,
+    fontSize: 13,
+    lineHeight: 18,
   },
   scanContainer: {
     flex: 1,
