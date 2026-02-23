@@ -1,34 +1,48 @@
 # Nutri Tracker MVP
 
-App personal de tracking nutricional con monorepo:
+Monorepo para tracking nutricional personal.
 
-- `apps/mobile`: Expo React Native (dark UI, escáner de barcode, dashboard gráfico)
+- `apps/mobile`: Expo React Native (auth + onboarding wizard + dashboard + escáner)
 - `services/api`: FastAPI + SQLModel + Alembic + pytest
 - `infra`: Postgres con Docker Compose
 
-## Qué hace ahora
+## Stack
 
-- Registro/login con verificación por código de email
-- Perfil corporal por usuario (peso, altura, edad, sexo, actividad, objetivo)
-- Cálculo de IMC y % grasa estimado (medidas opcionales)
-- Recomendación de objetivos y feedback de realismo
-- Escaneo EAN/UPC solo con cámara (sin input manual)
-- Importación local/OpenFoodFacts + creación por etiqueta
-- Registro de consumo por gramos/% paquete/unidades
-- Dashboard con donut de macros y calendario de registros
+- Backend: FastAPI, SQLModel/SQLAlchemy, Alembic, pytest, Ruff
+- Mobile: Expo SDK 54, cámara (barcode), captura de etiqueta, dark UI
+- Infra: Postgres 16 (docker compose)
 
-## Requisitos
+## Flujo de producto implementado
 
-- Docker + Docker Compose
-- Python 3.11+
-- Node 20+
-- npm 10+
+1. `NO autenticado` -> Welcome -> Crear cuenta / Iniciar sesión
+2. `Autenticado no verificado` -> solo pantalla Verify Email + resend OTP
+3. `Verificado sin onboarding` -> wizard 3 pasos:
+   - Paso 1: básicos + IMC visual
+   - Paso 2: medidas opcionales (skippable) + estimación % grasa
+   - Paso 3: objetivos diarios + feedback de realismo
+4. `Verificado + onboarding completado` -> app principal (Dashboard / Scan / History / Settings)
 
-## Arranque rápido (Make)
+## Variables de entorno
+
+Crea `.env` en la raíz:
+
+```bash
+cp .env.example .env
+```
+
+Variables importantes:
+
+- `DATABASE_URL`
+- `AUTH_SECRET_KEY`
+- `VERIFICATION_CODE_TTL_MINUTES`
+- `DEV_EMAIL_MODE=true` (si no hay SMTP, OTP se imprime en logs)
+- `EXPOSE_VERIFICATION_CODE=true` (dev)
+- `EXPO_PUBLIC_API_BASE_URL` (para móvil físico usa IP local, no localhost)
+
+## Arranque rápido
 
 ```bash
 cd /home/daniel/Documentos/nutri-tracker
-cp .env.example .env
 make reset-db
 make setup
 ```
@@ -36,60 +50,66 @@ make setup
 Luego en dos terminales:
 
 Terminal 1 (API):
+
 ```bash
 make api-dev
 ```
 
-Terminal 2 (Expo):
+Terminal 2 (mobile):
+
 ```bash
 make mobile-start
 ```
 
-## Configuración de móvil físico
+## Probar desde móvil físico
 
-En `apps/mobile/.env` usa tu IP local (no `localhost`):
+1. En `apps/mobile/.env` configura:
 
 ```env
 EXPO_PUBLIC_API_BASE_URL=http://TU_IP_LOCAL:8000
 ```
 
-## Flujo recomendado en la app
+2. Abre Expo Go y escanea el QR de `make mobile-start`.
+3. Crea cuenta.
+4. Usa OTP de email.
+   - Si no hay SMTP y `DEV_EMAIL_MODE=true`, el código queda en logs del backend.
+5. Completa onboarding.
+6. En `Scan`, escanea barcode dentro del rectángulo.
+7. Si no existe producto, captura etiqueta y crea producto.
+8. Registra cantidad (gramos / porción / % paquete).
+9. Revisa dashboard (rings + donut + calendario + intakes del día).
 
-1. Crear cuenta en `Registro`.
-2. Verificar código en `Verificar` (si no hay SMTP, en dev aparece código temporal).
-3. Entrar y revisar `Perfil` (IMC/% grasa + recomendación).
-4. Ir a `Escanear` y usar cámara con marco de enfoque.
-5. Registrar cantidad en modal post-escaneo.
-6. Revisar `Dashboard` (donut + calendario + objetivos).
+## API principal
 
-## Variables de entorno nuevas (API)
-
-- `AUTH_SECRET_KEY`
-- `AUTH_TOKEN_TTL_HOURS`
-- `VERIFICATION_CODE_TTL_MINUTES`
-- `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`, `SMTP_USE_TLS`
-- `EXPOSE_VERIFICATION_CODE` (true en desarrollo)
-
-## Endpoints principales
-
+- `GET /health`
 - `POST /auth/register`
-- `POST /auth/resend-code`
-- `POST /auth/verify-email`
 - `POST /auth/login`
-- `GET /me/profile`
-- `PUT /me/profile`
+- `POST /auth/verify`
+- `POST /auth/resend-code`
+- `GET /me`
+- `POST /profile`
 - `GET /me/analysis`
+- `GET /goals/{yyyy-mm-dd}`
+- `POST /goals/{yyyy-mm-dd}`
 - `GET /products/by_barcode/{ean}`
 - `POST /products/from_label_photo`
 - `POST /intakes`
 - `GET /days/{yyyy-mm-dd}/summary`
-- `POST /goals/{yyyy-mm-dd}`
 - `GET /calendar/{yyyy-mm}`
 
-## Validación backend
+## Tests y checks
+
+Backend:
 
 ```bash
 cd services/api
-python3 -m pytest -q
 python3 -m ruff check .
+python3 -m pytest -q
+```
+
+Mobile (tipado):
+
+```bash
+cd apps/mobile
+npx tsc --noEmit
 ```
