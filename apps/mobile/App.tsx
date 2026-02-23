@@ -1665,6 +1665,66 @@ function DashboardScreen() {
           />
         </View>
 
+        {summary?.goal ? (
+          <View style={styles.sectionCard}>
+            <Text style={styles.sectionTitle}>Progreso diario</Text>
+
+            {[
+              {
+                key: "kcal",
+                label: "Kcal",
+                consumed: summary.consumed.kcal,
+                goal: summary.goal.kcal_goal,
+                color: "#65d9ff",
+              },
+              {
+                key: "protein",
+                label: "Proteína",
+                consumed: summary.consumed.protein_g,
+                goal: summary.goal.protein_goal,
+                color: "#50f3c8",
+              },
+              {
+                key: "fat",
+                label: "Grasa",
+                consumed: summary.consumed.fat_g,
+                goal: summary.goal.fat_goal,
+                color: "#ffc97c",
+              },
+              {
+                key: "carbs",
+                label: "Carbs",
+                consumed: summary.consumed.carbs_g,
+                goal: summary.goal.carbs_goal,
+                color: "#8cb4ff",
+              },
+            ].map((metric) => {
+              const progress = clamp(metric.consumed / Math.max(metric.goal, 1), 0, 1);
+              return (
+                <View key={metric.key} style={styles.metricProgressRow}>
+                  <View style={styles.metricProgressHeader}>
+                    <Text style={styles.metricProgressLabel}>{metric.label}</Text>
+                    <Text style={styles.metricProgressValue}>
+                      {Math.round(metric.consumed)} / {Math.round(metric.goal)}
+                    </Text>
+                  </View>
+                  <View style={styles.metricProgressTrack}>
+                    <View
+                      style={[
+                        styles.metricProgressFill,
+                        {
+                          width: `${progress * 100}%`,
+                          backgroundColor: metric.color,
+                        },
+                      ]}
+                    />
+                  </View>
+                </View>
+              );
+            })}
+          </View>
+        ) : null}
+
         <MacroDonut segments={segments} title="Quesito de macros consumidos" />
 
         <View style={styles.sectionCard}>
@@ -2502,6 +2562,36 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     gap: 10,
     justifyContent: "center",
+  },
+  metricProgressRow: {
+    gap: 6,
+  },
+  metricProgressHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  metricProgressLabel: {
+    color: theme.text,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  metricProgressValue: {
+    color: theme.muted,
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  metricProgressTrack: {
+    height: 9,
+    borderRadius: 999,
+    backgroundColor: theme.panelSoft,
+    borderWidth: 1,
+    borderColor: theme.border,
+    overflow: "hidden",
+  },
+  metricProgressFill: {
+    height: "100%",
+    borderRadius: 999,
   },
   ringCard: {
     width: 150,
