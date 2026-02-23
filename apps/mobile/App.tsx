@@ -2157,7 +2157,13 @@ function ScanScreen() {
             )}
 
             <View pointerEvents="none" style={styles.scanOverlay}>
-              <View style={styles.scanFrame} />
+              <View style={styles.scanFrame}>
+                <View style={[styles.scanCorner, styles.scanCornerTopLeft]} />
+                <View style={[styles.scanCorner, styles.scanCornerTopRight]} />
+                <View style={[styles.scanCorner, styles.scanCornerBottomLeft]} />
+                <View style={[styles.scanCorner, styles.scanCornerBottomRight]} />
+              </View>
+              <Text style={styles.scanHint}>Alinea el barcode dentro del marco</Text>
             </View>
 
             {processing ? (
@@ -2805,6 +2811,48 @@ const styles = StyleSheet.create({
     borderColor: "rgba(44,240,197,0.95)",
     borderRadius: 16,
     backgroundColor: "rgba(0,0,0,0.12)",
+    position: "relative",
+  },
+  scanCorner: {
+    position: "absolute",
+    width: 22,
+    height: 22,
+    borderColor: theme.accent,
+  },
+  scanCornerTopLeft: {
+    top: -2,
+    left: -2,
+    borderTopWidth: 4,
+    borderLeftWidth: 4,
+    borderTopLeftRadius: 8,
+  },
+  scanCornerTopRight: {
+    top: -2,
+    right: -2,
+    borderTopWidth: 4,
+    borderRightWidth: 4,
+    borderTopRightRadius: 8,
+  },
+  scanCornerBottomLeft: {
+    bottom: -2,
+    left: -2,
+    borderBottomWidth: 4,
+    borderLeftWidth: 4,
+    borderBottomLeftRadius: 8,
+  },
+  scanCornerBottomRight: {
+    bottom: -2,
+    right: -2,
+    borderBottomWidth: 4,
+    borderRightWidth: 4,
+    borderBottomRightRadius: 8,
+  },
+  scanHint: {
+    marginTop: 12,
+    color: theme.text,
+    fontWeight: "700",
+    fontSize: 12,
+    letterSpacing: 0.2,
   },
   scanBusyOverlay: {
     ...StyleSheet.absoluteFillObject,
