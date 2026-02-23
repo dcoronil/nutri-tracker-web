@@ -3,7 +3,7 @@ from datetime import date
 from app.models import NutritionBasis
 
 
-def _create_product(client):
+def _create_product(client, auth_headers):
     payload = {
         "barcode": "75000001",
         "name": "Leche",
@@ -11,7 +11,7 @@ def _create_product(client):
         "nutrition_basis": NutritionBasis.per_100ml.value,
         "label_text": "Por 100 ml Energía 60 kcal Proteínas 3 g Grasas 3 g Carbohidratos 5 g",
     }
-    response = client.post("/products/from_label_photo", data=payload)
+    response = client.post("/products/from_label_photo", data=payload, headers=auth_headers)
     assert response.status_code == 200
     body = response.json()
     assert body["created"] is True
@@ -19,7 +19,7 @@ def _create_product(client):
 
 
 def test_create_intake_and_summary(client, auth_headers):
-    product_id = _create_product(client)
+    product_id = _create_product(client, auth_headers)
 
     goal_payload = {
         "kcal_goal": 2000,

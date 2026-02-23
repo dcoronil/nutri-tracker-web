@@ -1,7 +1,7 @@
 from app.models import NutritionBasis
 
 
-def test_lookup_local_product(client):
+def test_lookup_local_product(client, auth_headers):
     payload = {
         "barcode": "12345678",
         "name": "Yogur griego",
@@ -10,18 +10,18 @@ def test_lookup_local_product(client):
         "label_text": "Por 100 g Energía 120 kcal Proteínas 8 g Grasas 4 g Carbohidratos 10 g",
     }
 
-    create_response = client.post("/products/from_label_photo", data=payload)
+    create_response = client.post("/products/from_label_photo", data=payload, headers=auth_headers)
     assert create_response.status_code == 200
     assert create_response.json()["created"] is True
 
-    lookup = client.get("/products/by_barcode/12345678")
+    lookup = client.get("/products/by_barcode/12345678", headers=auth_headers)
     assert lookup.status_code == 200
     body = lookup.json()
     assert body["source"] == "local"
     assert body["product"]["name"] == "Yogur griego"
 
 
-def test_lookup_openfoodfacts_import(monkeypatch, client):
+def test_lookup_openfoodfacts_import(monkeypatch, client, auth_headers):
     async def _mock_fetch(_ean: str):
         return {
             "barcode": "76111111",
@@ -42,20 +42,20 @@ def test_lookup_openfoodfacts_import(monkeypatch, client):
 
     monkeypatch.setattr("app.api.routes.fetch_openfoodfacts_product", _mock_fetch)
 
-    response = client.get("/products/by_barcode/76111111")
+    response = client.get("/products/by_barcode/76111111", headers=auth_headers)
     assert response.status_code == 200
     body = response.json()
     assert body["source"] == "openfoodfacts_imported"
     assert body["product"]["barcode"] == "76111111"
 
 
-def test_label_photo_missing_fields(client):
+def test_label_photo_missing_fields(client, auth_headers):
     payload = {
         "name": "Producto incompleto",
         "label_text": "Por 100 g Energía 180 kcal Proteínas 5 g",
     }
 
-    response = client.post("/products/from_label_photo", data=payload)
+    response = client.post("/products/from_label_photo", data=payload, headers=auth_headers)
     assert response.status_code == 200
     body = response.json()
     assert body["created"] is False
