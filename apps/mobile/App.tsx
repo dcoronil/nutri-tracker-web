@@ -1677,6 +1677,7 @@ function DashboardScreen() {
   const auth = useAuth();
   const [selectedDate, setSelectedDate] = useState(formatDateLocal(new Date()));
   const [monthKey, setMonthKey] = useState(formatMonth(new Date()));
+  const [macroViewMode, setMacroViewMode] = useState<"rings" | "bars">("rings");
   const [summary, setSummary] = useState<DaySummary | null>(null);
   const [calendar, setCalendar] = useState<CalendarDayEntry[]>([]);
   const [loadingSummary, setLoadingSummary] = useState(true);
@@ -1725,10 +1726,47 @@ function DashboardScreen() {
     void loadCalendar();
   }, [loadCalendar]);
 
+  const now = useMemo(() => new Date(), []);
+  const hour = now.getHours();
+  const greeting = hour < 12 ? "Buenos días" : hour < 19 ? "Buenas tardes" : "Buenas noches";
+  const emailPrefix = auth.user?.email?.split("@")[0] ?? "Usuario";
+  const displayName = emailPrefix.charAt(0).toUpperCase() + emailPrefix.slice(1);
+
+  const goal = summary?.goal;
+  const consumed = summary?.consumed;
+  const kcalGoal = goal?.kcal_goal ?? 0;
+  const kcalConsumed = consumed?.kcal ?? 0;
+  const kcalRemaining = Math.round((kcalGoal || 0) - kcalConsumed);
+  const kcalProgress = kcalGoal > 0 ? clamp(kcalConsumed / kcalGoal, 0, 1) : 0;
+  const exceededKcal = kcalGoal > 0 && kcalConsumed > kcalGoal;
+
+  const quickInsights = useMemo(() => {
+    if (!summary || !goal) {
+      return ["Registra tu primer consumo del día para activar recomendaciones."];
+    }
+    const notes: string[] = [];
+
+    const proteinRemaining = goal.protein_goal - summary.consumed.protein_g;
+    if (proteinRemaining > 0) {
+      notes.push(`Te faltan ${Math.round(proteinRemaining)} g de proteína para tu objetivo.`);
+    }
+    if (summary.consumed.kcal > goal.kcal_goal * 1.15) {
+      notes.push("Hoy vas alto en kcal (+15% sobre objetivo). Ajusta la siguiente comida.");
+    }
+    if (summary.consumed.fat_g > goal.fat_goal * 1.2) {
+      notes.push("Grasas altas vs objetivo diario.");
+    }
+    if (summary.intakes.length === 0) {
+      notes.push("Aún no registras comidas hoy.");
+    }
+
+    return notes.length > 0 ? notes.slice(0, 3) : ["Buen trabajo, tu día va dentro de rango."];
+  }, [goal, summary]);
+
   const segments: Segment[] = [
-    { label: "Prote", value: summary?.consumed.protein_g ?? 0, color: "#4fd4ff" },
-    { label: "Grasa", value: summary?.consumed.fat_g ?? 0, color: "#f6c453" },
-    { label: "Carbs", value: summary?.consumed.carbs_g ?? 0, color: "#61ea9f" },
+    { label: "Prote", value: summary?.consumed.protein_g ?? 0, color: theme.protein },
+    { label: "Carbs", value: summary?.consumed.carbs_g ?? 0, color: theme.carbs },
+    { label: "Grasas", value: summary?.consumed.fat_g ?? 0, color: theme.fats },
   ];
 
   const cells = calendarCells(monthKey);
@@ -1736,102 +1774,144 @@ function DashboardScreen() {
   return (
     <SafeAreaView style={styles.screen}>
       <ScrollView contentContainerStyle={styles.mainScroll}>
-        <AppHeader title="Dashboard" subtitle={`Día ${selectedDate}`} />
-
-        <View style={styles.rowWrap}>
-          <RingProgress
-            label="kcal"
-            consumed={summary?.consumed.kcal ?? 0}
-            goal={summary?.goal?.kcal_goal ?? Math.max(summary?.consumed.kcal ?? 0, 1)}
-            color="#65d9ff"
-            unit="kcal"
-          />
-          <RingProgress
-            label="prote"
-            consumed={summary?.consumed.protein_g ?? 0}
-            goal={summary?.goal?.protein_goal ?? Math.max(summary?.consumed.protein_g ?? 0, 1)}
-            color="#50f3c8"
-            unit="g"
-          />
-          <RingProgress
-            label="fat"
-            consumed={summary?.consumed.fat_g ?? 0}
-            goal={summary?.goal?.fat_goal ?? Math.max(summary?.consumed.fat_g ?? 0, 1)}
-            color="#ffc97c"
-            unit="g"
-          />
-          <RingProgress
-            label="carbs"
-            consumed={summary?.consumed.carbs_g ?? 0}
-            goal={summary?.goal?.carbs_goal ?? Math.max(summary?.consumed.carbs_g ?? 0, 1)}
-            color="#8cb4ff"
-            unit="g"
-          />
+        <View style={styles.dashboardHeaderRow}>
+          <View style={styles.dashboardHeaderLeft}>
+            <Text style={styles.dashboardGreeting}>
+              {greeting}, {displayName}
+            </Text>
+            <Text style={styles.dashboardDate}>{selectedDate}</Text>
+          </View>
+          <Pressable style={styles.quickWeightBtn} onPress={() => Alert.alert("Peso", "En el siguiente bloque añadimos registro rápido.")}>
+            <Text style={styles.quickWeightBtnText}>+</Text>
+          </Pressable>
+          <AvatarCircle letter={displayName.slice(0, 1)} />
         </View>
 
-        {summary?.goal ? (
-          <View style={styles.sectionCard}>
-            <Text style={styles.sectionTitle}>Progreso diario</Text>
-
-            {[
-              {
-                key: "kcal",
-                label: "Kcal",
-                consumed: summary.consumed.kcal,
-                goal: summary.goal.kcal_goal,
-                color: "#65d9ff",
-              },
-              {
-                key: "protein",
-                label: "Proteína",
-                consumed: summary.consumed.protein_g,
-                goal: summary.goal.protein_goal,
-                color: "#50f3c8",
-              },
-              {
-                key: "fat",
-                label: "Grasa",
-                consumed: summary.consumed.fat_g,
-                goal: summary.goal.fat_goal,
-                color: "#ffc97c",
-              },
-              {
-                key: "carbs",
-                label: "Carbs",
-                consumed: summary.consumed.carbs_g,
-                goal: summary.goal.carbs_goal,
-                color: "#8cb4ff",
-              },
-            ].map((metric) => {
-              const progress = clamp(metric.consumed / Math.max(metric.goal, 1), 0, 1);
-              return (
-                <View key={metric.key} style={styles.metricProgressRow}>
-                  <View style={styles.metricProgressHeader}>
-                    <Text style={styles.metricProgressLabel}>{metric.label}</Text>
-                    <Text style={styles.metricProgressValue}>
-                      {Math.round(metric.consumed)} / {Math.round(metric.goal)}
-                    </Text>
-                  </View>
-                  <View style={styles.metricProgressTrack}>
-                    <View
-                      style={[
-                        styles.metricProgressFill,
-                        {
-                          width: `${progress * 100}%`,
-                          backgroundColor: metric.color,
-                        },
-                      ]}
-                    />
-                  </View>
-                </View>
-              );
-            })}
+        <AppCard style={[styles.heroCard, exceededKcal && styles.heroCardExceeded]}>
+          <SectionHeader title="Resumen del día" subtitle="Kcal restantes" />
+          <Text style={styles.heroRemainingValue}>{kcalGoal > 0 ? kcalRemaining : "-"}</Text>
+          <Text style={styles.heroRemainingSub}>
+            {Math.round(kcalConsumed)} consumidas / {Math.round(kcalGoal)} objetivo
+          </Text>
+          <View style={styles.heroProgressTrack}>
+            <View
+              style={[
+                styles.heroProgressFill,
+                { width: `${kcalProgress * 100}%`, backgroundColor: exceededKcal ? theme.danger : theme.kcal },
+              ]}
+            />
           </View>
-        ) : null}
+          <View style={styles.heroPillsRow}>
+            <StatPill label="Estado" value={exceededKcal ? "Sobre objetivo" : "En rango"} tone={exceededKcal ? "danger" : "accent"} />
+            <StatPill
+              label="Registros"
+              value={String(summary?.intakes.length ?? 0)}
+              tone={summary?.intakes.length ? "default" : "warning"}
+            />
+          </View>
+        </AppCard>
 
-        <MacroDonut segments={segments} title="Quesito de macros consumidos" />
+        <AppCard>
+          <SectionHeader title="Macros del día" subtitle="Vista rápida" />
+          <View style={styles.macroToggleRow}>
+            <Pressable
+              style={[styles.macroToggleChip, macroViewMode === "rings" && styles.macroToggleChipActive]}
+              onPress={() => setMacroViewMode("rings")}
+            >
+              <Text style={[styles.macroToggleText, macroViewMode === "rings" && styles.macroToggleTextActive]}>Rings</Text>
+            </Pressable>
+            <Pressable
+              style={[styles.macroToggleChip, macroViewMode === "bars" && styles.macroToggleChipActive]}
+              onPress={() => setMacroViewMode("bars")}
+            >
+              <Text style={[styles.macroToggleText, macroViewMode === "bars" && styles.macroToggleTextActive]}>Barras</Text>
+            </Pressable>
+          </View>
 
-        <View style={styles.sectionCard}>
+          {macroViewMode === "rings" ? (
+            <View style={styles.rowWrap}>
+              <RingProgress
+                label="kcal"
+                consumed={summary?.consumed.kcal ?? 0}
+                goal={summary?.goal?.kcal_goal ?? Math.max(summary?.consumed.kcal ?? 0, 1)}
+                color={theme.kcal}
+                unit="kcal"
+              />
+              <RingProgress
+                label="prote"
+                consumed={summary?.consumed.protein_g ?? 0}
+                goal={summary?.goal?.protein_goal ?? Math.max(summary?.consumed.protein_g ?? 0, 1)}
+                color={theme.protein}
+                unit="g"
+              />
+              <RingProgress
+                label="carbs"
+                consumed={summary?.consumed.carbs_g ?? 0}
+                goal={summary?.goal?.carbs_goal ?? Math.max(summary?.consumed.carbs_g ?? 0, 1)}
+                color={theme.carbs}
+                unit="g"
+              />
+              <RingProgress
+                label="grasas"
+                consumed={summary?.consumed.fat_g ?? 0}
+                goal={summary?.goal?.fat_goal ?? Math.max(summary?.consumed.fat_g ?? 0, 1)}
+                color={theme.fats}
+                unit="g"
+              />
+            </View>
+          ) : (
+            <View style={styles.barsList}>
+              <MacroProgressBar
+                label="Kcal"
+                consumed={summary?.consumed.kcal ?? 0}
+                goal={summary?.goal?.kcal_goal ?? 1}
+                color={theme.kcal}
+                unit="kcal"
+              />
+              <MacroProgressBar
+                label="Proteína"
+                consumed={summary?.consumed.protein_g ?? 0}
+                goal={summary?.goal?.protein_goal ?? 1}
+                color={theme.protein}
+                unit="g"
+              />
+              <MacroProgressBar
+                label="Carbs"
+                consumed={summary?.consumed.carbs_g ?? 0}
+                goal={summary?.goal?.carbs_goal ?? 1}
+                color={theme.carbs}
+                unit="g"
+              />
+              <MacroProgressBar
+                label="Grasas"
+                consumed={summary?.consumed.fat_g ?? 0}
+                goal={summary?.goal?.fat_goal ?? 1}
+                color={theme.fats}
+                unit="g"
+              />
+            </View>
+          )}
+        </AppCard>
+
+        <MacroDonut segments={segments} title="Distribución de macros consumidos" />
+
+        <AppCard>
+          <SectionHeader title="Seguimiento corporal" subtitle="Estado actual" actionLabel="Registrar peso" onAction={() => Alert.alert("Peso", "En el siguiente bloque añadimos formulario y gráfica.")} />
+          <View style={styles.bodyStatsRow}>
+            <StatPill label="Peso" value={auth.profile ? `${auth.profile.weight_kg} kg` : "-"} tone="accent" />
+            <StatPill label="IMC" value={auth.profile?.bmi ? auth.profile.bmi.toFixed(1) : "-"} />
+            <StatPill
+              label="% grasa"
+              value={auth.profile?.body_fat_percent ? `${auth.profile.body_fat_percent.toFixed(1)}%` : "N/D"}
+            />
+          </View>
+          <Text style={styles.helperText}>
+            Próximo paso: tendencia semanal de peso y cambio vs semana anterior.
+          </Text>
+        </AppCard>
+
+        <AppCard>
+          <SectionHeader title="Calendario y actividad" subtitle={monthKey} />
           <View style={styles.calendarHeader}>
             <Pressable onPress={() => setMonthKey((current) => moveMonth(current, -1))} style={styles.calendarNavBtn}>
               <Text style={styles.calendarNavText}>{"<"}</Text>
@@ -1873,32 +1953,45 @@ function DashboardScreen() {
               );
             })}
           </View>
-        </View>
+        </AppCard>
 
-        <View style={styles.sectionCard}>
-          <View style={styles.sectionTitleRow}>
-            <Text style={styles.sectionTitle}>Registros del día</Text>
-            <SecondaryButton title="Recargar" onPress={() => void loadSummary()} />
-          </View>
-
+        <AppCard>
+          <SectionHeader title="Intakes de hoy" subtitle="Línea temporal" actionLabel="Recargar" onAction={() => void loadSummary()} />
           {loadingSummary ? <ActivityIndicator color={theme.accent} /> : null}
 
           {!loadingSummary && summary && summary.intakes.length === 0 ? (
-            <Text style={styles.helperText}>No hay intakes registrados para este día.</Text>
+            <EmptyState title="Aún sin registros" subtitle="Escanea tu primer producto para empezar a construir tu día." />
           ) : null}
 
           {!loadingSummary && summary
             ? summary.intakes.map((item) => (
                 <View key={item.id} style={styles.intakeRow}>
-                  <View>
-                    <Text style={styles.intakeName}>{item.product_name ?? "Producto"}</Text>
+                  <View style={styles.intakeTimeDotWrap}>
+                    <View style={styles.intakeTimeDot} />
                     <Text style={styles.intakeMeta}>{new Date(item.created_at).toLocaleTimeString()}</Text>
+                  </View>
+                  <View style={styles.intakeMain}>
+                    <Text style={styles.intakeName}>{item.product_name ?? "Producto"}</Text>
+                    <Text style={styles.intakeMeta}>
+                      {Math.round(item.quantity_g ?? 0)} g | P {Math.round(item.nutrients.protein_g)} / C{" "}
+                      {Math.round(item.nutrients.carbs_g)} / G {Math.round(item.nutrients.fat_g)}
+                    </Text>
                   </View>
                   <Text style={styles.intakeKcal}>{Math.round(item.nutrients.kcal)} kcal</Text>
                 </View>
               ))
             : null}
-        </View>
+        </AppCard>
+
+        <AppCard>
+          <SectionHeader title="Insights rápidos" subtitle="Recomendaciones prácticas" />
+          {quickInsights.map((insight) => (
+            <View key={insight} style={styles.insightRow}>
+              <View style={styles.insightDot} />
+              <Text style={styles.helperText}>{insight}</Text>
+            </View>
+          ))}
+        </AppCard>
       </ScrollView>
     </SafeAreaView>
   );
@@ -2789,6 +2882,106 @@ const styles = StyleSheet.create({
     gap: 14,
     paddingBottom: 90,
   },
+  dashboardHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  dashboardHeaderLeft: {
+    flex: 1,
+  },
+  dashboardGreeting: {
+    color: theme.text,
+    fontSize: 24,
+    fontWeight: "800",
+    letterSpacing: 0.2,
+  },
+  dashboardDate: {
+    color: theme.muted,
+    fontSize: 13,
+    marginTop: 2,
+  },
+  quickWeightBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: theme.border,
+    backgroundColor: theme.panelSoft,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  quickWeightBtnText: {
+    color: theme.accent,
+    fontWeight: "800",
+    fontSize: 20,
+    marginTop: -1,
+  },
+  heroCard: {
+    gap: 10,
+  },
+  heroCardExceeded: {
+    borderColor: theme.danger,
+  },
+  heroRemainingValue: {
+    color: theme.text,
+    fontSize: 48,
+    fontWeight: "800",
+    lineHeight: 52,
+  },
+  heroRemainingSub: {
+    color: theme.muted,
+    fontSize: 13,
+  },
+  heroProgressTrack: {
+    height: 12,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: theme.border,
+    backgroundColor: theme.panelSoft,
+    overflow: "hidden",
+  },
+  heroProgressFill: {
+    height: "100%",
+    borderRadius: 999,
+  },
+  heroPillsRow: {
+    flexDirection: "row",
+    gap: 8,
+    flexWrap: "wrap",
+  },
+  macroToggleRow: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  macroToggleChip: {
+    borderWidth: 1,
+    borderColor: theme.border,
+    borderRadius: 999,
+    backgroundColor: theme.panelSoft,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+  },
+  macroToggleChipActive: {
+    borderColor: theme.accent,
+    backgroundColor: theme.accentSoft,
+  },
+  macroToggleText: {
+    color: theme.muted,
+    fontWeight: "700",
+    fontSize: 12,
+  },
+  macroToggleTextActive: {
+    color: theme.text,
+  },
+  barsList: {
+    gap: 8,
+  },
+  bodyStatsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
   rowWrap: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -2973,6 +3166,22 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     backgroundColor: theme.panelSoft,
+    gap: 10,
+  },
+  intakeTimeDotWrap: {
+    width: 64,
+    alignItems: "flex-start",
+    gap: 4,
+  },
+  intakeTimeDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 999,
+    backgroundColor: theme.accent,
+  },
+  intakeMain: {
+    flex: 1,
+    gap: 2,
   },
   intakeName: {
     color: theme.text,
@@ -2987,6 +3196,18 @@ const styles = StyleSheet.create({
     color: theme.accent,
     fontWeight: "700",
     fontSize: 13,
+  },
+  insightRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+  },
+  insightDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 999,
+    marginTop: 6,
+    backgroundColor: theme.accent,
   },
   historyRow: {
     flexDirection: "row",
