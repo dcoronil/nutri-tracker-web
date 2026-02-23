@@ -24,6 +24,30 @@ MVP funcional para tracking nutricional personal con flujo completo:
 - Node 20+
 - npm 10+
 
+## Levantar con Make (recomendado)
+
+```bash
+make setup
+```
+
+Luego en dos terminales:
+
+```bash
+make api-dev
+```
+
+```bash
+make mobile-start
+```
+
+Comandos útiles:
+
+- `make up` / `make down` (Postgres)
+- `make reset-db` (borra volumen y recrea Postgres)
+- `make api-migrate` (migraciones)
+- `make api-test` y `make api-lint`
+- `make logs` (logs de Postgres)
+
 ## 1) Variables de entorno
 
 Copia el ejemplo raíz:

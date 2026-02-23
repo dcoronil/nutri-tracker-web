@@ -4,7 +4,13 @@
     "slug": "nutri-tracker",
     "version": "0.1.0",
     "orientation": "portrait",
-    "platforms": ["ios", "android"],
-    "userInterfaceStyle": "light"
+    "platforms": [
+      "ios",
+      "android"
+    ],
+    "userInterfaceStyle": "light",
+    "plugins": [
+      "expo-asset"
+    ]
   }
 }
