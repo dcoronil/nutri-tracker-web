@@ -68,6 +68,57 @@ class ProfileRead(ProfileInput):
     body_fat_color: str
 
 
+class BodyWeightLogCreate(BaseModel):
+    weight_kg: float = Field(gt=0)
+    note: str | None = Field(default=None, max_length=280)
+    created_at: datetime | None = None
+
+
+class BodyWeightLogRead(BaseModel):
+    id: int
+    weight_kg: float
+    note: str | None = None
+    created_at: datetime
+
+
+class BodyMeasurementLogCreate(BaseModel):
+    waist_cm: float | None = Field(default=None, gt=0)
+    neck_cm: float | None = Field(default=None, gt=0)
+    hip_cm: float | None = Field(default=None, gt=0)
+    chest_cm: float | None = Field(default=None, gt=0)
+    arm_cm: float | None = Field(default=None, gt=0)
+    thigh_cm: float | None = Field(default=None, gt=0)
+    created_at: datetime | None = None
+
+
+class BodyMeasurementLogRead(BaseModel):
+    id: int
+    waist_cm: float | None = None
+    neck_cm: float | None = None
+    hip_cm: float | None = None
+    chest_cm: float | None = None
+    arm_cm: float | None = None
+    thigh_cm: float | None = None
+    created_at: datetime
+
+
+class BodyTrendPoint(BaseModel):
+    date: date
+    weight_kg: float
+
+
+class BodySummaryResponse(BaseModel):
+    latest_weight_kg: float | None = None
+    weekly_change_kg: float | None = None
+    bmi: float | None = None
+    bmi_category: str = "unknown"
+    body_fat_percent: float | None = None
+    body_fat_category: str = "unknown"
+    needs_weight_checkin: bool
+    trend_points: list[BodyTrendPoint] = Field(default_factory=list)
+    hints: list[str] = Field(default_factory=list)
+
+
 class GoalFeedback(BaseModel):
     realistic: bool
     notes: list[str] = Field(default_factory=list)

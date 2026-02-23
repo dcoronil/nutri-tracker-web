@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta
 
-from app.models import ActivityLevel, GoalType, Sex, UserProfile
+from app.models import ActivityLevel, BodyWeightLog, GoalType, Sex, UserProfile
 
 
 def bmi(weight_kg: float, height_cm: float) -> float:
@@ -169,3 +171,86 @@ def goal_feedback(profile: UserProfile, goal: dict[str, float], recommended: dic
         "realistic": realistic,
         "notes": notes,
     }
+
+
+def average_weight(logs: Sequence[BodyWeightLog], start: datetime, end: datetime) -> float | None:
+    def _as_utc(value: datetime) -> datetime:
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
+
+    values = [row.weight_kg for row in logs if start <= _as_utc(row.created_at) < end]
+    if not values:
+        return None
+    return round(sum(values) / len(values), 3)
+
+
+def weekly_weight_change(logs: Sequence[BodyWeightLog], now: datetime | None = None) -> float | None:
+    now_utc = now or datetime.now(UTC)
+    current_start = now_utc - timedelta(days=7)
+    previous_start = now_utc - timedelta(days=14)
+
+    current_avg = average_weight(logs, current_start, now_utc)
+    previous_avg = average_weight(logs, previous_start, current_start)
+    if current_avg is None or previous_avg is None:
+        return None
+    return round(current_avg - previous_avg, 3)
+
+
+def rolling_weight_points(logs: Sequence[BodyWeightLog], days: int = 56) -> list[dict[str, float | str]]:
+    if not logs:
+        return []
+
+    cutoff = datetime.now(UTC) - timedelta(days=days)
+    def _as_utc(value: datetime) -> datetime:
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
+
+    sorted_logs = sorted([row for row in logs if _as_utc(row.created_at) >= cutoff], key=lambda row: row.created_at)
+    points: list[dict[str, float | str]] = []
+    for row in sorted_logs:
+        points.append({"date": row.created_at.date().isoformat(), "weight_kg": round(row.weight_kg, 2)})
+    return points
+
+
+def should_prompt_weight_log(last_weight_log_at: datetime | None, now: datetime | None = None) -> bool:
+    if last_weight_log_at is None:
+        return True
+    now_utc = now or datetime.now(UTC)
+    if last_weight_log_at.tzinfo is None:
+        last_weight_log_at = last_weight_log_at.replace(tzinfo=UTC)
+    else:
+        last_weight_log_at = last_weight_log_at.astimezone(UTC)
+    return (now_utc - last_weight_log_at).days >= 7
+
+
+def coach_hints(
+    *,
+    consumed_kcal: float,
+    kcal_goal: float | None,
+    consumed_protein_g: float,
+    protein_goal: float | None,
+    has_intakes_today: bool,
+    current_time: datetime | None = None,
+    weekly_weight_delta: float | None = None,
+    latest_weight_kg: float | None = None,
+) -> list[str]:
+    notes: list[str] = []
+
+    if kcal_goal and kcal_goal > 0 and consumed_kcal > kcal_goal * 1.15:
+        notes.append("Kcal por encima del 115% del objetivo diario.")
+
+    if protein_goal and protein_goal > 0 and consumed_protein_g < protein_goal * 0.7:
+        notes.append("Proteína por debajo del 70% del objetivo diario.")
+
+    now = current_time or datetime.now(UTC)
+    if now.hour >= 18 and not has_intakes_today:
+        notes.append("No hay registros hoy. Añade tus comidas para mantener la adherencia.")
+
+    if weekly_weight_delta is not None and latest_weight_kg and latest_weight_kg > 0:
+        weekly_percent = abs(weekly_weight_delta) / latest_weight_kg
+        if weekly_weight_delta < 0 and weekly_percent > 0.01:
+            notes.append("Tu peso baja >1% por semana. Considera subir kcal ligeramente.")
+
+    return notes

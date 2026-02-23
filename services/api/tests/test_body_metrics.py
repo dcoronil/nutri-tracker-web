@@ -1,5 +1,7 @@
-from app.models import Sex, UserProfile
-from app.services.body_metrics import bmi, bmi_category, body_fat_percent
+from datetime import UTC, datetime, timedelta
+
+from app.models import BodyWeightLog, Sex, UserProfile
+from app.services.body_metrics import bmi, bmi_category, body_fat_percent, coach_hints, weekly_weight_change
 
 
 def test_bmi_calculation_and_category():
@@ -51,3 +53,31 @@ def test_body_fat_requires_measurements():
     )
 
     assert body_fat_percent(profile) is None
+
+
+def test_weekly_weight_change():
+    now = datetime.now(UTC)
+    logs = [
+        BodyWeightLog(user_id=1, weight_kg=80.2, created_at=now - timedelta(days=13)),
+        BodyWeightLog(user_id=1, weight_kg=80.0, created_at=now - timedelta(days=10)),
+        BodyWeightLog(user_id=1, weight_kg=79.4, created_at=now - timedelta(days=6)),
+        BodyWeightLog(user_id=1, weight_kg=79.2, created_at=now - timedelta(days=2)),
+    ]
+
+    delta = weekly_weight_change(logs, now=now)
+    assert delta is not None
+    assert delta < 0
+
+
+def test_coach_hints_rules():
+    hints = coach_hints(
+        consumed_kcal=2600,
+        kcal_goal=2000,
+        consumed_protein_g=70,
+        protein_goal=140,
+        has_intakes_today=False,
+        current_time=datetime.now(UTC).replace(hour=20),
+        weekly_weight_delta=-1.2,
+        latest_weight_kg=75,
+    )
+    assert len(hints) >= 3

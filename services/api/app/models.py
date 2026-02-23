@@ -148,3 +148,27 @@ class DailyGoal(SQLModel, table=True):
     protein_goal: float = Field(ge=0)
     fat_goal: float = Field(ge=0)
     carbs_goal: float = Field(ge=0)
+
+
+class BodyWeightLog(SQLModel, table=True):
+    __tablename__ = "body_weight_log"
+
+    id: int | None = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="user_account.id", index=True)
+    weight_kg: float = Field(gt=0)
+    note: str | None = Field(default=None, max_length=280)
+    created_at: datetime = Field(default_factory=utcnow, index=True)
+
+
+class BodyMeasurementLog(SQLModel, table=True):
+    __tablename__ = "body_measurement_log"
+
+    id: int | None = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="user_account.id", index=True)
+    waist_cm: float | None = Field(default=None, gt=0)
+    neck_cm: float | None = Field(default=None, gt=0)
+    hip_cm: float | None = Field(default=None, gt=0)
+    chest_cm: float | None = Field(default=None, gt=0)
+    arm_cm: float | None = Field(default=None, gt=0)
+    thigh_cm: float | None = Field(default=None, gt=0)
+    created_at: datetime = Field(default_factory=utcnow, index=True)

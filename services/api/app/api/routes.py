@@ -10,6 +10,8 @@ from sqlmodel import Session, desc, select
 from app.config import get_settings
 from app.database import get_session
 from app.models import (
+    BodyMeasurementLog,
+    BodyWeightLog,
     DailyGoal,
     EmailOTP,
     Intake,
@@ -22,6 +24,12 @@ from app.models import (
 from app.schemas import (
     AuthResponse,
     AuthUser,
+    BodyMeasurementLogCreate,
+    BodyMeasurementLogRead,
+    BodySummaryResponse,
+    BodyTrendPoint,
+    BodyWeightLogCreate,
+    BodyWeightLogRead,
     CalendarDayEntry,
     CalendarMonthResponse,
     DailyGoalResponse,
@@ -61,8 +69,12 @@ from app.services.body_metrics import (
     bmi_category,
     body_fat_category,
     body_fat_percent,
+    coach_hints,
     goal_feedback,
     recommended_goals,
+    rolling_weight_points,
+    should_prompt_weight_log,
+    weekly_weight_change,
 )
 from app.services.email import EmailSendError, send_verification_email
 from app.services.nutrition import (
@@ -453,6 +465,207 @@ def _preference_payload(pref: UserProductPreference | None) -> ProductPreference
         quantity_g=pref.quantity_g,
         quantity_units=pref.quantity_units,
         percent_pack=pref.percent_pack,
+    )
+
+
+def _weight_log_to_read(record: BodyWeightLog) -> BodyWeightLogRead:
+    return BodyWeightLogRead(
+        id=record.id,
+        weight_kg=record.weight_kg,
+        note=record.note,
+        created_at=record.created_at,
+    )
+
+
+def _measurement_log_to_read(record: BodyMeasurementLog) -> BodyMeasurementLogRead:
+    return BodyMeasurementLogRead(
+        id=record.id,
+        waist_cm=record.waist_cm,
+        neck_cm=record.neck_cm,
+        hip_cm=record.hip_cm,
+        chest_cm=record.chest_cm,
+        arm_cm=record.arm_cm,
+        thigh_cm=record.thigh_cm,
+        created_at=record.created_at,
+    )
+
+
+@router.post("/body/weight-logs", response_model=BodyWeightLogRead)
+def create_body_weight_log(
+    payload: BodyWeightLogCreate,
+    current_user: Annotated[UserAccount, Depends(get_verified_user)],
+    session: Annotated[Session, Depends(get_session)],
+) -> BodyWeightLogRead:
+    created_at = payload.created_at or datetime.now(UTC)
+    record = BodyWeightLog(
+        user_id=current_user.id,
+        weight_kg=payload.weight_kg,
+        note=payload.note,
+        created_at=created_at,
+    )
+    session.add(record)
+
+    profile = _load_profile(session, current_user.id)
+    if profile:
+        profile.weight_kg = payload.weight_kg
+        profile.bmi = bmi(profile.weight_kg, profile.height_cm)
+        profile.body_fat_percent = body_fat_percent(profile)
+        profile.updated_at = datetime.now(UTC)
+        session.add(profile)
+
+    session.commit()
+    session.refresh(record)
+    return _weight_log_to_read(record)
+
+
+@router.get("/body/weight-logs", response_model=list[BodyWeightLogRead])
+def list_body_weight_logs(
+    current_user: Annotated[UserAccount, Depends(get_verified_user)],
+    session: Annotated[Session, Depends(get_session)],
+    limit: int = 120,
+) -> list[BodyWeightLogRead]:
+    bounded_limit = max(1, min(limit, 365))
+    rows = session.exec(
+        select(BodyWeightLog)
+        .where(BodyWeightLog.user_id == current_user.id)
+        .order_by(desc(BodyWeightLog.created_at))
+        .limit(bounded_limit)
+    ).all()
+    return [_weight_log_to_read(row) for row in rows]
+
+
+@router.post("/body/measurement-logs", response_model=BodyMeasurementLogRead)
+def create_body_measurement_log(
+    payload: BodyMeasurementLogCreate,
+    current_user: Annotated[UserAccount, Depends(get_verified_user)],
+    session: Annotated[Session, Depends(get_session)],
+) -> BodyMeasurementLogRead:
+    created_at = payload.created_at or datetime.now(UTC)
+    record = BodyMeasurementLog(
+        user_id=current_user.id,
+        waist_cm=payload.waist_cm,
+        neck_cm=payload.neck_cm,
+        hip_cm=payload.hip_cm,
+        chest_cm=payload.chest_cm,
+        arm_cm=payload.arm_cm,
+        thigh_cm=payload.thigh_cm,
+        created_at=created_at,
+    )
+    session.add(record)
+
+    profile = _load_profile(session, current_user.id)
+    if profile:
+        profile.waist_cm = payload.waist_cm
+        profile.neck_cm = payload.neck_cm
+        profile.hip_cm = payload.hip_cm
+        profile.chest_cm = payload.chest_cm
+        profile.arm_cm = payload.arm_cm
+        profile.thigh_cm = payload.thigh_cm
+        profile.body_fat_percent = body_fat_percent(profile)
+        profile.updated_at = datetime.now(UTC)
+        session.add(profile)
+
+    session.commit()
+    session.refresh(record)
+    return _measurement_log_to_read(record)
+
+
+@router.get("/body/measurement-logs", response_model=list[BodyMeasurementLogRead])
+def list_body_measurement_logs(
+    current_user: Annotated[UserAccount, Depends(get_verified_user)],
+    session: Annotated[Session, Depends(get_session)],
+    limit: int = 120,
+) -> list[BodyMeasurementLogRead]:
+    bounded_limit = max(1, min(limit, 365))
+    rows = session.exec(
+        select(BodyMeasurementLog)
+        .where(BodyMeasurementLog.user_id == current_user.id)
+        .order_by(desc(BodyMeasurementLog.created_at))
+        .limit(bounded_limit)
+    ).all()
+    return [_measurement_log_to_read(row) for row in rows]
+
+
+@router.get("/body/summary", response_model=BodySummaryResponse)
+def body_summary(
+    current_user: Annotated[UserAccount, Depends(get_ready_user)],
+    session: Annotated[Session, Depends(get_session)],
+) -> BodySummaryResponse:
+    profile = _load_profile(session, current_user.id)
+
+    weight_logs = session.exec(
+        select(BodyWeightLog)
+        .where(BodyWeightLog.user_id == current_user.id)
+        .order_by(desc(BodyWeightLog.created_at))
+        .limit(400)
+    ).all()
+
+    latest_weight = weight_logs[0] if weight_logs else None
+    weekly_change = weekly_weight_change(weight_logs, now=datetime.now(UTC))
+    weight_points = rolling_weight_points(weight_logs, days=84)
+    trend_points: list[BodyTrendPoint] = [
+        BodyTrendPoint(date=date.fromisoformat(str(point["date"])), weight_kg=float(point["weight_kg"]))
+        for point in weight_points
+    ]
+
+    bmi_value = None
+    bmi_label = "unknown"
+    body_fat_value = None
+    body_fat_label = "unknown"
+
+    if profile:
+        if latest_weight:
+            bmi_value = bmi(latest_weight.weight_kg, profile.height_cm)
+        else:
+            bmi_value = bmi(profile.weight_kg, profile.height_cm)
+        bmi_label, _ = bmi_category(bmi_value)
+
+        measurement = session.exec(
+            select(BodyMeasurementLog)
+            .where(BodyMeasurementLog.user_id == current_user.id)
+            .order_by(desc(BodyMeasurementLog.created_at))
+        ).first()
+
+        body_fat_profile = UserProfile(
+            user_id=profile.user_id,
+            weight_kg=latest_weight.weight_kg if latest_weight else profile.weight_kg,
+            height_cm=profile.height_cm,
+            age=profile.age,
+            sex=profile.sex,
+            activity_level=profile.activity_level,
+            goal_type=profile.goal_type,
+            waist_cm=measurement.waist_cm if measurement else profile.waist_cm,
+            neck_cm=measurement.neck_cm if measurement else profile.neck_cm,
+            hip_cm=measurement.hip_cm if measurement else profile.hip_cm,
+            chest_cm=measurement.chest_cm if measurement else profile.chest_cm,
+            arm_cm=measurement.arm_cm if measurement else profile.arm_cm,
+            thigh_cm=measurement.thigh_cm if measurement else profile.thigh_cm,
+        )
+        body_fat_value = body_fat_percent(body_fat_profile)
+        body_fat_label, _ = body_fat_category(body_fat_value, body_fat_profile.sex)
+
+    today = datetime.now(UTC).date()
+    today_summary = _day_summary(day=today, current_user=current_user, session=session)
+    hints = coach_hints(
+        consumed_kcal=today_summary.consumed.kcal,
+        kcal_goal=today_summary.goal.kcal_goal if today_summary.goal else None,
+        consumed_protein_g=today_summary.consumed.protein_g,
+        protein_goal=today_summary.goal.protein_goal if today_summary.goal else None,
+        has_intakes_today=len(today_summary.intakes) > 0,
+        weekly_weight_delta=weekly_change,
+        latest_weight_kg=latest_weight.weight_kg if latest_weight else profile.weight_kg if profile else None,
+    )
+
+    return BodySummaryResponse(
+        latest_weight_kg=latest_weight.weight_kg if latest_weight else profile.weight_kg if profile else None,
+        weekly_change_kg=weekly_change,
+        bmi=bmi_value,
+        bmi_category=bmi_label,
+        body_fat_percent=body_fat_value,
+        body_fat_category=body_fat_label,
+        needs_weight_checkin=should_prompt_weight_log(latest_weight.created_at if latest_weight else None),
+        trend_points=trend_points,
+        hints=hints,
     )
 
 
