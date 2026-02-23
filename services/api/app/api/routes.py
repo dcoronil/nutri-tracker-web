@@ -456,6 +456,27 @@ def _preference_payload(pref: UserProductPreference | None) -> ProductPreference
     )
 
 
+def _apply_openfoodfacts_payload(product: Product, off_product: dict[str, object]) -> None:
+    brand_value = off_product.get("brand")
+    image_value = off_product.get("image_url")
+
+    product.name = str(off_product["name"])
+    product.brand = brand_value if isinstance(brand_value, str | type(None)) else None
+    product.image_url = image_value if isinstance(image_value, str | type(None)) else None
+    product.nutrition_basis = off_product["nutrition_basis"]  # type: ignore[assignment]
+    product.serving_size_g = off_product.get("serving_size_g")  # type: ignore[assignment]
+    product.net_weight_g = off_product.get("net_weight_g")  # type: ignore[assignment]
+    product.kcal = off_product["kcal"]  # type: ignore[assignment]
+    product.protein_g = off_product["protein_g"]  # type: ignore[assignment]
+    product.fat_g = off_product["fat_g"]  # type: ignore[assignment]
+    product.sat_fat_g = off_product.get("sat_fat_g")  # type: ignore[assignment]
+    product.carbs_g = off_product["carbs_g"]  # type: ignore[assignment]
+    product.sugars_g = off_product.get("sugars_g")  # type: ignore[assignment]
+    product.fiber_g = off_product.get("fiber_g")  # type: ignore[assignment]
+    product.salt_g = off_product.get("salt_g")  # type: ignore[assignment]
+    product.data_confidence = "openfoodfacts"
+
+
 @router.get("/products/by_barcode/{ean}", response_model=ProductLookupResponse)
 async def product_by_barcode(
     ean: str,
@@ -467,13 +488,16 @@ async def product_by_barcode(
 
     local = session.exec(select(Product).where(Product.barcode == ean)).first()
     if local:
-        if not local.image_url:
+        # Avoid mixing label/manual nutrition with external images.
+        # Only sync OpenFoodFacts products with OpenFoodFacts data.
+        if local.data_confidence == "openfoodfacts":
             try:
-                off_for_image = await fetch_openfoodfacts_product(ean)
+                off_product = await fetch_openfoodfacts_product(ean)
             except OpenFoodFactsClientError:
-                off_for_image = None
-            if off_for_image and off_for_image.get("image_url"):
-                local.image_url = off_for_image["image_url"]
+                off_product = None
+
+            if off_product and not off_missing_critical_fields(off_product):
+                _apply_openfoodfacts_payload(local, off_product)
                 session.add(local)
                 session.commit()
                 session.refresh(local)
@@ -507,22 +531,23 @@ async def product_by_barcode(
 
     product = Product(
         barcode=ean,
-        name=off_product["name"],
-        brand=off_product.get("brand"),
-        image_url=off_product.get("image_url"),
-        nutrition_basis=off_product["nutrition_basis"],
-        serving_size_g=off_product.get("serving_size_g"),
-        net_weight_g=off_product.get("net_weight_g"),
-        kcal=off_product["kcal"],
-        protein_g=off_product["protein_g"],
-        fat_g=off_product["fat_g"],
-        sat_fat_g=off_product.get("sat_fat_g"),
-        carbs_g=off_product["carbs_g"],
-        sugars_g=off_product.get("sugars_g"),
-        fiber_g=off_product.get("fiber_g"),
-        salt_g=off_product.get("salt_g"),
-        data_confidence="openfoodfacts",
+        name="",
+        brand=None,
+        image_url=None,
+        nutrition_basis=NutritionBasis.per_100g,
+        serving_size_g=None,
+        net_weight_g=None,
+        kcal=0,
+        protein_g=0,
+        fat_g=0,
+        sat_fat_g=None,
+        carbs_g=0,
+        sugars_g=None,
+        fiber_g=None,
+        salt_g=None,
+        data_confidence="manual",
     )
+    _apply_openfoodfacts_payload(product, off_product)
     session.add(product)
     session.commit()
     session.refresh(product)

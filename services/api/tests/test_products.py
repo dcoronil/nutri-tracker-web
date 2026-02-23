@@ -63,3 +63,28 @@ def test_label_photo_missing_fields(client, auth_headers):
     assert body["created"] is False
     assert "fat_g" in body["missing_fields"]
     assert "carbs_g" in body["missing_fields"]
+
+
+def test_local_manual_product_does_not_mix_with_openfoodfacts_image(monkeypatch, client, auth_headers):
+    payload = {
+        "barcode": "99001122",
+        "name": "Producto manual",
+        "brand": "Casa",
+        "nutrition_basis": NutritionBasis.per_100g.value,
+        "label_text": "Por 100 g Energía 250 kcal Proteínas 11 g Grasas 9 g Carbohidratos 30 g",
+    }
+    create_response = client.post("/products/from_label_photo", data=payload, headers=auth_headers)
+    assert create_response.status_code == 200
+    assert create_response.json()["created"] is True
+
+    async def _fail_if_called(_ean: str):
+        raise AssertionError("OpenFoodFacts should not be called for label/manual product")
+
+    monkeypatch.setattr("app.api.routes.fetch_openfoodfacts_product", _fail_if_called)
+
+    lookup = client.get("/products/by_barcode/99001122", headers=auth_headers)
+    assert lookup.status_code == 200
+    body = lookup.json()
+    assert body["source"] == "local"
+    assert body["product"]["name"] == "Producto manual"
+    assert body["product"]["image_url"] is None
