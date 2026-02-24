@@ -441,10 +441,10 @@ const theme = {
   danger: "#f48f8f",
   warning: "#f1d08e",
   ok: "#a9d8bb",
-  protein: "#d4d4d4",
-  carbs: "#c2c2c2",
-  fats: "#b1b1b1",
-  kcal: "#ffffff",
+  protein: "#60a5fa",
+  carbs: "#fbbf24",
+  fats: "#d8b4fe",
+  kcal: "#2dd4bf",
   blue: "#b8b8b8",
   yellow: "#dcdcdc",
   red: "#f48f8f",
@@ -1434,6 +1434,31 @@ function EmptyState(props: { title: string; subtitle: string }) {
   );
 }
 
+function MetricCard(props: { label: string; value: string; subtitle?: string; color?: string }) {
+  return (
+    <View style={styles.metricTile}>
+      <Text style={styles.metricTileLabel}>{props.label}</Text>
+      <Text style={[styles.metricTileValue, props.color ? { color: props.color } : null]}>{props.value}</Text>
+      {props.subtitle ? <Text style={styles.metricTileSubtitle}>{props.subtitle}</Text> : null}
+    </View>
+  );
+}
+
+function MacroLegend({ segments }: { segments: Segment[] }) {
+  return (
+    <View style={styles.legendWrap}>
+      {segments.map((segment) => (
+        <View key={segment.label} style={styles.legendItem}>
+          <View style={[styles.legendDot, { backgroundColor: segment.color }]} />
+          <Text style={styles.legendText}>
+            {segment.label} {Math.round(segment.value)}g
+          </Text>
+        </View>
+      ))}
+    </View>
+  );
+}
+
 function MacroProgressBar(props: { label: string; consumed: number; goal: number; color: string; unit: string }) {
   const rawProgress = props.goal > 0 ? props.consumed / props.goal : 0;
   const clamped = clamp(rawProgress, 0, 1);
@@ -2108,16 +2133,7 @@ function MacroDonut({ segments, title }: { segments: Segment[]; title: string })
           <Text style={styles.donutCenterSub}>{Math.round(total)} g</Text>
         </View>
       </View>
-      <View style={styles.legendWrap}>
-        {segments.map((segment) => (
-          <View key={segment.label} style={styles.legendItem}>
-            <View style={[styles.legendDot, { backgroundColor: segment.color }]} />
-            <Text style={styles.legendText}>
-              {segment.label} {Math.round(segment.value)}g
-            </Text>
-          </View>
-        ))}
-      </View>
+      <MacroLegend segments={segments} />
     </View>
   );
 }
@@ -2371,10 +2387,10 @@ function DashboardScreen({
             actionLabel="Registrar peso"
             onAction={onOpenBodyProgress}
           />
-          <View style={styles.bodyStatsRow}>
-            <StatPill label="Peso" value={auth.profile ? `${auth.profile.weight_kg} kg` : "-"} tone="accent" />
-            <StatPill label="IMC" value={auth.profile?.bmi ? auth.profile.bmi.toFixed(1) : "-"} />
-            <StatPill
+          <View style={styles.metricTileRow}>
+            <MetricCard label="Peso" value={auth.profile ? `${auth.profile.weight_kg} kg` : "-"} />
+            <MetricCard label="IMC" value={auth.profile?.bmi ? auth.profile.bmi.toFixed(1) : "-"} />
+            <MetricCard
               label="% grasa"
               value={auth.profile?.body_fat_percent ? `${auth.profile.body_fat_percent.toFixed(1)}%` : "N/D"}
             />
@@ -5108,6 +5124,36 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 8,
+  },
+  metricTileRow: {
+    flexDirection: "row",
+    gap: 8,
+    flexWrap: "wrap",
+  },
+  metricTile: {
+    minWidth: 92,
+    flex: 1,
+    borderWidth: 1,
+    borderColor: theme.border,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    backgroundColor: theme.panelSoft,
+    gap: 3,
+  },
+  metricTileLabel: {
+    color: theme.muted,
+    fontSize: 11,
+    fontWeight: "600",
+  },
+  metricTileValue: {
+    color: theme.text,
+    fontSize: 16,
+    fontWeight: "800",
+  },
+  metricTileSubtitle: {
+    color: theme.muted,
+    fontSize: 11,
   },
   weightChartWrap: {
     minHeight: 126,
