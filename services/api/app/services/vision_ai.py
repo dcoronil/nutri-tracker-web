@@ -14,8 +14,8 @@ from app.services.nutrition import sanitize_numeric_values
 
 ConfidenceLevel = Literal["high", "medium", "low"]
 VisionModel = Literal["gpt-4o-mini", "gpt-5.1"]
-MealModelPreference = Literal["gpt-4o-mini", "gpt-5.1", "auto"]
 SUPPORTED_VISION_MODELS = {"gpt-4o-mini", "gpt-5.1"}
+MEAL_ESTIMATE_MODEL: Literal["gpt-4o-mini"] = "gpt-4o-mini"
 
 
 class VisionAIError(RuntimeError):
@@ -35,15 +35,6 @@ def _resolve_openai_vision_model(
         if normalized in SUPPORTED_VISION_MODELS:
             return normalized  # type: ignore[return-value]
     return default
-
-
-def _normalize_meal_model_preference(model_preference: str | None) -> MealModelPreference:
-    normalized = (model_preference or "").strip().lower()
-    if not normalized:
-        return "gpt-4o-mini"
-    if normalized not in {"gpt-4o-mini", "gpt-5.1", "auto"}:
-        raise VisionAIError("Modelo no soportado. Usa gpt-4o-mini, gpt-5.1 o auto.")
-    return normalized  # type: ignore[return-value]
 
 
 def _extract_json_blob(text: str) -> dict[str, Any]:
@@ -270,10 +261,8 @@ async def estimate_meal_with_ai(
     quantity_note: str | None,
     photo_files: list[UploadFile],
     adjust_percent: int,
-    model_preference: str | None,
 ) -> dict[str, Any]:
-    preference = _normalize_meal_model_preference(model_preference)
-    model_used = "gpt-4o-mini" if preference in {"gpt-4o-mini", "auto"} else "gpt-5.1"
+    model_used = MEAL_ESTIMATE_MODEL
 
     portion_text = portion_size or "unknown"
     added_fat_text = "unknown" if has_added_fats is None else ("yes" if has_added_fats else "no")
@@ -361,14 +350,8 @@ async def estimate_meal_with_ai(
     if not ingredients:
         ingredients = [str(item) for item in heuristic_fallback["detected_ingredients"]]
 
-    suggested_model: VisionModel | None = None
-    if confidence_level == "low" and model_used == "gpt-4o-mini":
-        suggested_model = "gpt-5.1"
-        questions.append("Confianza baja: prueba gpt-5.1 para más precisión.")
-
     return {
         "model_used": model_used,
-        "suggested_model": suggested_model,
         "confidence_level": confidence_level,
         "analysis_method": "ai_vision",
         "questions": questions,
