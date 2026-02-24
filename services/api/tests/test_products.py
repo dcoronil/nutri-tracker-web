@@ -219,3 +219,67 @@ def test_product_data_quality_verified_and_imported(monkeypatch, client, auth_he
     imported_quality = client.get(f"/products/{imported_product_id}/data-quality", headers=auth_headers)
     assert imported_quality.status_code == 200
     assert imported_quality.json()["status"] == "imported"
+
+
+def test_correct_product_uses_ai_when_key_available(monkeypatch, client, auth_headers):
+    save_key = client.post(
+        "/user/ai-key",
+        json={"provider": "openai", "api_key": "sk-test-key-1234567890abcd"},
+        headers=auth_headers,
+    )
+    assert save_key.status_code == 200
+
+    payload = {
+        "barcode": "77110022",
+        "name": "Cereal",
+        "brand": "Demo",
+        "nutrition_basis": NutritionBasis.per_100g.value,
+        "label_text": "Por 100 g Energía 410 kcal Proteínas 8 g Grasas 11 g Carbohidratos 66 g",
+    }
+    create_response = client.post("/products/from_label_photo", data=payload, headers=auth_headers)
+    assert create_response.status_code == 200
+    product_id = create_response.json()["product"]["id"]
+
+    async def _mock_ai_extract(*, api_key: str, label_text: str, photo_files: list, basis_hint):
+        del label_text, photo_files, basis_hint
+        assert api_key.startswith("sk-")
+        return {
+            "nutrition": {
+                "kcal": 392.0,
+                "protein_g": 9.0,
+                "fat_g": 8.0,
+                "sat_fat_g": 1.2,
+                "carbs_g": 69.0,
+                "sugars_g": 17.0,
+                "fiber_g": 4.0,
+                "salt_g": 0.3,
+                "nutrition_basis": NutritionBasis.per_100g,
+                "serving_size_g": None,
+            },
+            "questions": [],
+            "analysis_method": "ai_vision",
+        }
+
+    monkeypatch.setattr("app.api.routes.extract_label_nutrition_with_ai", _mock_ai_extract)
+
+    preview = client.post(
+        f"/products/{product_id}/correct-from-label-photo",
+        data={"label_text": "tabla nutricional actualizada"},
+        headers=auth_headers,
+    )
+    assert preview.status_code == 200
+    preview_body = preview.json()
+    assert preview_body["analysis_method"] == "ai_vision"
+    assert preview_body["warnings"] == []
+    assert preview_body["detected"]["kcal"] == 392.0
+
+    confirm = client.post(
+        f"/products/{product_id}/correct-from-label-photo",
+        data={"confirm_update": "true", "label_text": "tabla nutricional actualizada"},
+        headers=auth_headers,
+    )
+    assert confirm.status_code == 200
+    confirmed = confirm.json()
+    assert confirmed["updated"] is True
+    assert confirmed["analysis_method"] == "ai_vision"
+    assert confirmed["product"]["kcal"] == 392.0

@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     dev_email_mode: bool = True
     ai_key_encryption_secret: str = "change-me-ai-key-secret"
     openai_base_url: str = "https://api.openai.com/v1"
+    openai_vision_model: str = "gpt-4o-mini"
+    openai_vision_timeout_seconds: float = 35.0
     ai_provider_default: str = "openai"
     ai_key_test_timeout_seconds: float = 8.0
 

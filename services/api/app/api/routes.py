@@ -100,7 +100,6 @@ from app.services.body_metrics import (
     weekly_weight_change,
 )
 from app.services.email import EmailSendError, send_verification_email
-from app.services.meal_estimate import estimate_meal
 from app.services.nutrition import (
     IntakeComputationError,
     coherence_questions,
@@ -117,6 +116,11 @@ from app.services.nutrition import (
 from app.services.openfoodfacts import OpenFoodFactsClientError, fetch_openfoodfacts_product
 from app.services.openfoodfacts import (
     missing_critical_fields as off_missing_critical_fields,
+)
+from app.services.vision_ai import (
+    VisionAIError,
+    estimate_meal_with_ai,
+    extract_label_nutrition_with_ai,
 )
 
 router = APIRouter()
@@ -201,6 +205,88 @@ def _ai_key_status(user: UserAccount) -> UserAIKeyStatusResponse:
         provider=provider,
         key_hint=key_hint,
     )
+
+
+def _user_ai_provider_and_key(
+    user: UserAccount,
+    *,
+    required: bool,
+) -> tuple[str, str] | None:
+    if not user.ai_api_key_encrypted:
+        if required:
+            raise HTTPException(
+                status_code=status.HTTP_428_PRECONDITION_REQUIRED,
+                detail="Configura tu API key en Settings > IA para usar esta función.",
+            )
+        return None
+
+    try:
+        provider = normalize_provider_or_default(user.ai_provider)
+        api_key = decrypt_api_key(user.ai_api_key_encrypted)
+    except AIKeyValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+
+    if provider != "openai":
+        if not required:
+            return None
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail=f"Provider '{provider}' no implementado para visión todavía.",
+        )
+
+    return provider, api_key
+
+
+async def _extract_label_payload(
+    *,
+    user: UserAccount,
+    basis_hint: NutritionBasis | None,
+    serving_size_g: float | None,
+    net_weight_g: float | None,
+    label_text: str | None,
+    photos: list[UploadFile] | None,
+) -> tuple[dict[str, object], list[str], list[str], Literal["ai_vision", "ocr_fallback"]]:
+    photo_files = photos or []
+    extracted_text = (label_text or "").strip()
+    warnings: list[str] = []
+    questions: list[str] = []
+    analysis_method: Literal["ai_vision", "ocr_fallback"] = "ocr_fallback"
+    extracted: dict[str, object] = {}
+
+    ai_credentials = _user_ai_provider_and_key(user, required=False)
+    if ai_credentials and (extracted_text or photo_files):
+        _, api_key = ai_credentials
+        try:
+            ai_result = await extract_label_nutrition_with_ai(
+                api_key=api_key,
+                label_text=extracted_text,
+                photo_files=photo_files,
+                basis_hint=basis_hint,
+            )
+            extracted = dict(ai_result["nutrition"])  # type: ignore[arg-type]
+            questions.extend(ai_result["questions"])  # type: ignore[arg-type]
+            analysis_method = "ai_vision"
+        except VisionAIError as exc:
+            warnings.append(f"IA no disponible ({exc}). Se aplicó OCR clásico.")
+
+    if analysis_method != "ai_vision":
+        if user.ai_api_key_encrypted and not ai_credentials:
+            warnings.append("Proveedor IA actual no soportado para visión; se aplicó OCR clásico.")
+        if photo_files and not user.ai_api_key_encrypted:
+            warnings.append("Sin API key configurada: se aplicó OCR clásico (menos preciso).")
+        if not extracted_text and photo_files:
+            extracted_text = await ocr_text_from_images(photo_files)
+        extracted = extract_nutrition_from_text(extracted_text, basis_hint=basis_hint)
+
+    extracted["serving_size_g"] = extracted.get("serving_size_g") or serving_size_g
+    if net_weight_g is not None:
+        extracted["net_weight_g"] = net_weight_g
+
+    if not extracted_text and not photo_files:
+        questions.append("No se recibió texto ni imagen de etiqueta.")
+
+    questions.extend(coherence_questions(extracted))
+    return extracted, questions, warnings, analysis_method
 
 
 def get_current_user(
@@ -1113,21 +1199,20 @@ async def create_product_from_label_photo(
     label_text: Annotated[str | None, Form()] = None,
     photos: Annotated[list[UploadFile] | None, File()] = None,
 ) -> LabelPhotoResponse:
-    del current_user
     image_url_clean = image_url.strip() if image_url and image_url.strip() else None
 
-    photo_files = photos or []
-    extracted_text = (label_text or "").strip()
-    if not extracted_text and photo_files:
-        extracted_text = await ocr_text_from_images(photo_files)
-
-    extracted = extract_nutrition_from_text(extracted_text, basis_hint=nutrition_basis)
-    extracted["serving_size_g"] = extracted.get("serving_size_g") or serving_size_g
+    extracted, questions, warnings, analysis_method = await _extract_label_payload(
+        user=current_user,
+        basis_hint=nutrition_basis,
+        serving_size_g=serving_size_g,
+        net_weight_g=net_weight_g,
+        label_text=label_text,
+        photos=photos,
+    )
 
     missing_fields = missing_critical_fields(extracted)
-    questions = coherence_questions(extracted)
-
-    if not extracted_text:
+    extracted_text = (label_text or "").strip()
+    if not extracted_text and not photos:
         questions.insert(0, "Could not extract text from label. Upload a clearer image or paste OCR text.")
 
     if not name:
@@ -1145,6 +1230,8 @@ async def create_product_from_label_photo(
             extracted=nutrition_payload,
             missing_fields=missing_fields,
             questions=questions,
+            analysis_method=analysis_method,
+            warnings=warnings,
         )
 
     payload = sanitize_numeric_values({**extracted, "net_weight_g": net_weight_g})
@@ -1207,6 +1294,8 @@ async def create_product_from_label_photo(
         extracted=nutrition_payload,
         missing_fields=[],
         questions=questions,
+        analysis_method=analysis_method,
+        warnings=warnings,
     )
 
 
@@ -1243,6 +1332,7 @@ def _apply_extracted_label_to_product(
 async def _correct_product_from_label_impl(
     *,
     product: Product,
+    user: UserAccount,
     session: Session,
     confirm_update: bool,
     name: str | None,
@@ -1253,19 +1343,16 @@ async def _correct_product_from_label_impl(
     label_text: str | None,
     photos: list[UploadFile] | None,
 ) -> ProductCorrectionResponse:
-    extracted_text = (label_text or "").strip()
-    photo_files = photos or []
-    if not extracted_text and photo_files:
-        extracted_text = await ocr_text_from_images(photo_files)
-
-    extracted = extract_nutrition_from_text(extracted_text, basis_hint=nutrition_basis)
-    extracted["serving_size_g"] = extracted.get("serving_size_g") or serving_size_g
-    extracted["net_weight_g"] = net_weight_g if net_weight_g is not None else product.net_weight_g
-
+    extracted, questions, warnings, analysis_method = await _extract_label_payload(
+        user=user,
+        basis_hint=nutrition_basis,
+        serving_size_g=serving_size_g,
+        net_weight_g=net_weight_g if net_weight_g is not None else product.net_weight_g,
+        label_text=label_text,
+        photos=photos,
+    )
     missing_fields = missing_critical_fields(extracted)
-    questions = coherence_questions(extracted)
-
-    if not extracted_text:
+    if not (label_text or "").strip() and not photos:
         questions.insert(0, "No se pudo extraer texto de la etiqueta. Sube una imagen más nítida o pega el OCR.")
 
     detected_payload = NutritionExtract.model_validate(extracted)
@@ -1281,6 +1368,8 @@ async def _correct_product_from_label_impl(
             missing_fields=missing_fields,
             questions=questions,
             message="Revisa comparación y reenvía con confirm_update=true para guardar.",
+            analysis_method=analysis_method,
+            warnings=warnings,
         )
 
     if missing_fields:
@@ -1293,6 +1382,8 @@ async def _correct_product_from_label_impl(
             missing_fields=missing_fields,
             questions=questions,
             message="Faltan campos críticos; no se guardó la corrección.",
+            analysis_method=analysis_method,
+            warnings=warnings,
         )
 
     payload = sanitize_numeric_values(extracted)
@@ -1316,6 +1407,8 @@ async def _correct_product_from_label_impl(
         missing_fields=[],
         questions=questions,
         message="Producto actualizado y marcado como verificado localmente.",
+        analysis_method=analysis_method,
+        warnings=warnings,
     )
 
 
@@ -1333,13 +1426,13 @@ async def correct_product_from_label_photo(
     label_text: Annotated[str | None, Form()] = None,
     photos: Annotated[list[UploadFile] | None, File()] = None,
 ) -> ProductCorrectionResponse:
-    del current_user
     product = session.get(Product, product_id)
     if not product:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
 
     return await _correct_product_from_label_impl(
         product=product,
+        user=current_user,
         session=session,
         confirm_update=confirm_update,
         name=name,
@@ -1366,7 +1459,6 @@ async def correct_product_by_barcode_from_label_photo(
     label_text: Annotated[str | None, Form()] = None,
     photos: Annotated[list[UploadFile] | None, File()] = None,
 ) -> ProductCorrectionResponse:
-    del current_user
     code = barcode.strip()
     if not code:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="barcode is required")
@@ -1377,6 +1469,7 @@ async def correct_product_by_barcode_from_label_photo(
 
     return await _correct_product_from_label_impl(
         product=product,
+        user=current_user,
         session=session,
         confirm_update=confirm_update,
         name=name,
@@ -1398,16 +1491,27 @@ async def meal_photo_estimate_questions(
     quantity_note: Annotated[str | None, Form()] = None,
     photos: Annotated[list[UploadFile] | None, File()] = None,
 ) -> MealEstimateQuestionsResponse:
-    del current_user
+    ai_credentials = _user_ai_provider_and_key(current_user, required=True)
+    if not ai_credentials:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="No AI credentials available",
+        )
+    _, api_key = ai_credentials
     normalized_portion = portion_size if portion_size in {"small", "medium", "large"} else None
-    result = estimate_meal(
-        description=description,
-        portion_size=normalized_portion,  # type: ignore[arg-type]
-        has_added_fats=has_added_fats,
-        quantity_note=quantity_note,
-        photo_count=len(photos or []),
-        adjust_percent=0,
-    )
+    try:
+        result = await estimate_meal_with_ai(
+            api_key=api_key,
+            description=description,
+            portion_size=normalized_portion,  # type: ignore[arg-type]
+            has_added_fats=has_added_fats,
+            quantity_note=quantity_note,
+            photo_files=photos or [],
+            adjust_percent=0,
+        )
+    except VisionAIError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
     return MealEstimateQuestionsResponse(
         questions=result["questions"],  # type: ignore[arg-type]
         assumptions=result["assumptions"],  # type: ignore[arg-type]
@@ -1427,16 +1531,28 @@ async def intake_from_meal_photo_estimate(
     commit: Annotated[bool, Form()] = False,
     photos: Annotated[list[UploadFile] | None, File()] = None,
 ) -> MealPhotoEstimateResponse:
+    ai_credentials = _user_ai_provider_and_key(current_user, required=True)
+    if not ai_credentials:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="No AI credentials available",
+        )
+    _, api_key = ai_credentials
+
     normalized_portion = portion_size if portion_size in {"small", "medium", "large"} else None
     normalized_adjust = max(-30, min(30, adjust_percent))
-    result = estimate_meal(
-        description=description,
-        portion_size=normalized_portion,  # type: ignore[arg-type]
-        has_added_fats=has_added_fats,
-        quantity_note=quantity_note,
-        photo_count=len(photos or []),
-        adjust_percent=normalized_adjust,
-    )
+    try:
+        result = await estimate_meal_with_ai(
+            api_key=api_key,
+            description=description,
+            portion_size=normalized_portion,  # type: ignore[arg-type]
+            has_added_fats=has_added_fats,
+            quantity_note=quantity_note,
+            photo_files=photos or [],
+            adjust_percent=normalized_adjust,
+        )
+    except VisionAIError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
     nutrition = result["nutrition"]  # type: ignore[assignment]
     preview_nutrients = {
@@ -1453,6 +1569,7 @@ async def intake_from_meal_photo_estimate(
     response_base = {
         "saved": False,
         "confidence_level": result["confidence_level"],
+        "analysis_method": result.get("analysis_method", "heuristic"),
         "assumptions": result["assumptions"],
         "questions": result["questions"],
         "detected_ingredients": result["detected_ingredients"],

@@ -160,6 +160,8 @@ type LabelPhotoResponse = {
   product: Product | null;
   missing_fields: string[];
   questions: string[];
+  analysis_method?: "ai_vision" | "ocr_fallback";
+  warnings?: string[];
 };
 
 type ProductCorrectionResponse = {
@@ -193,6 +195,8 @@ type ProductCorrectionResponse = {
   missing_fields: string[];
   questions: string[];
   message: string;
+  analysis_method?: "ai_vision" | "ocr_fallback";
+  warnings?: string[];
 };
 
 type MealEstimateQuestionsResponse = {
@@ -252,6 +256,7 @@ type Intake = {
 type MealPhotoEstimateResponse = {
   saved: boolean;
   confidence_level: "high" | "medium" | "low";
+  analysis_method?: "ai_vision" | "heuristic";
   assumptions: string[];
   questions: string[];
   detected_ingredients: string[];
@@ -3780,7 +3785,26 @@ function AddScreen() {
     setPhase("label");
   };
 
-  const startMealFlow = () => {
+  const ensureAIKeyConfigured = useCallback(async (): Promise<boolean> => {
+    try {
+      const statusPayload = await auth.fetchUserAIKeyStatus();
+      if (statusPayload.configured) {
+        return true;
+      }
+      Alert.alert("IA", "Configura tu API key en Settings > IA para usar estimación por foto.");
+      return false;
+    } catch (error) {
+      Alert.alert("IA", parseApiError(error));
+      return false;
+    }
+  }, [auth]);
+
+  const startMealFlow = async () => {
+    const hasKey = await ensureAIKeyConfigured();
+    if (!hasKey) {
+      return;
+    }
+
     resetScanState();
     setMealDescription("");
     setMealPhotos([]);
@@ -3926,6 +3950,10 @@ function AddScreen() {
   const mealAddedFatFlag = mealAddedFat === "unknown" ? undefined : mealAddedFat === "yes";
 
   const runMealQuestions = async () => {
+    const hasKey = await ensureAIKeyConfigured();
+    if (!hasKey) {
+      return;
+    }
     if (!mealDescription.trim()) {
       Alert.alert("Estimación", "Añade una descripción breve de la comida.");
       return;
@@ -3950,6 +3978,10 @@ function AddScreen() {
   };
 
   const runMealPreview = async (adjustPercent = mealAdjust) => {
+    const hasKey = await ensureAIKeyConfigured();
+    if (!hasKey) {
+      return;
+    }
     if (!mealDescription.trim()) {
       Alert.alert("Estimación", "Añade una descripción breve de la comida.");
       return;
@@ -3978,6 +4010,10 @@ function AddScreen() {
   };
 
   const saveMealEstimate = async () => {
+    const hasKey = await ensureAIKeyConfigured();
+    if (!hasKey) {
+      return;
+    }
     if (!mealDescription.trim()) {
       Alert.alert("Estimación", "Añade una descripción breve de la comida.");
       return;
@@ -4030,8 +4066,9 @@ function AddScreen() {
           confirmUpdate: false,
         });
         setCorrectionPreview(correction);
-        if (correction.questions.length) {
-          setLabelQuestions(correction.questions);
+        const correctionNotes = [...correction.questions, ...(correction.warnings ?? [])];
+        if (correctionNotes.length) {
+          setLabelQuestions(correctionNotes);
         }
         return;
       }
@@ -4045,9 +4082,10 @@ function AddScreen() {
       });
 
       if (!response.created || !response.product) {
-        const questions = response.questions.join("\n") || "No se pudo crear/actualizar el producto.";
+        const notes = [...response.questions, ...(response.warnings ?? [])];
+        const questions = notes.join("\n") || "No se pudo crear/actualizar el producto.";
         Alert.alert("Etiqueta", questions);
-        setLabelQuestions(response.questions);
+        setLabelQuestions(notes);
         return;
       }
 
@@ -4340,7 +4378,7 @@ function AddScreen() {
             <AddActionCard
               title="Estimar comida por foto"
               subtitle="Foto + descripción con estimación conservadora"
-              onPress={startMealFlow}
+              onPress={() => void startMealFlow()}
             />
             <AddActionCard
               title="Añadir manualmente"
@@ -4473,6 +4511,9 @@ function AddScreen() {
                 <AppCard style={styles.previewCard}>
                   <SectionHeader title="Comparación" subtitle={correctionPreview.message} />
                   <Text style={styles.helperText}>
+                    Método de análisis: {correctionPreview.analysis_method === "ai_vision" ? "IA visión" : "OCR clásico"}
+                  </Text>
+                  <Text style={styles.helperText}>
                     kcal actual/detectado: {Math.round(correctionPreview.current.kcal ?? 0)} /{" "}
                     {Math.round(correctionPreview.detected.kcal ?? 0)}
                   </Text>
@@ -4491,6 +4532,13 @@ function AddScreen() {
                   {correctionPreview.missing_fields.length ? (
                     <Text style={styles.helperText}>Faltan campos: {correctionPreview.missing_fields.join(", ")}</Text>
                   ) : null}
+                  {correctionPreview.warnings?.length
+                    ? correctionPreview.warnings.map((warning) => (
+                        <Text key={warning} style={styles.helperText}>
+                          - {warning}
+                        </Text>
+                      ))
+                    : null}
                   <PrimaryButton
                     title="Confirmar actualización"
                     onPress={() => void confirmCorrection()}
@@ -4591,6 +4639,9 @@ function AddScreen() {
               {mealPreview ? (
                 <AppCard style={styles.previewCard}>
                   <SectionHeader title="Preview estimado" subtitle={`Confianza: ${mealPreview.confidence_level}`} />
+                  <Text style={styles.helperText}>
+                    Método: {mealPreview.analysis_method === "ai_vision" ? "IA visión" : "Heurístico"}
+                  </Text>
                   <View style={styles.previewRow}>
                     <StatPill label="kcal" value={`${Math.round(mealPreview.preview_nutrients.kcal)}`} tone="warning" />
                     <StatPill label="prote" value={`${Math.round(mealPreview.preview_nutrients.protein_g)} g`} />

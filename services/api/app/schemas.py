@@ -235,6 +235,8 @@ class LabelPhotoResponse(BaseModel):
     extracted: NutritionExtract
     missing_fields: list[str] = Field(default_factory=list)
     questions: list[str] = Field(default_factory=list)
+    analysis_method: Literal["ai_vision", "ocr_fallback"] = "ocr_fallback"
+    warnings: list[str] = Field(default_factory=list)
 
 
 class ProductCorrectionResponse(BaseModel):
@@ -246,6 +248,8 @@ class ProductCorrectionResponse(BaseModel):
     missing_fields: list[str] = Field(default_factory=list)
     questions: list[str] = Field(default_factory=list)
     message: str
+    analysis_method: Literal["ai_vision", "ocr_fallback"] = "ocr_fallback"
+    warnings: list[str] = Field(default_factory=list)
 
 
 class ProductDataQualityResponse(BaseModel):
@@ -356,6 +360,7 @@ class MealEstimateQuestionsResponse(BaseModel):
 class MealPhotoEstimateResponse(BaseModel):
     saved: bool
     confidence_level: Literal["high", "medium", "low"]
+    analysis_method: Literal["ai_vision", "heuristic"] = "ai_vision"
     assumptions: list[str] = Field(default_factory=list)
     questions: list[str] = Field(default_factory=list)
     detected_ingredients: list[str] = Field(default_factory=list)
