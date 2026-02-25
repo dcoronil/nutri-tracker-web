@@ -13,7 +13,7 @@ endif
 
 .PHONY: help env check-tools setup up down reset-db logs ps \
 	api-install api-migrate api-run api-dev api-test api-lint api-health \
-	mobile-install mobile-start
+	mobile-install mobile-start mobile-devclient ios-dev-build
 
 help:
 	@echo "Comandos principales:"
@@ -22,6 +22,8 @@ help:
 	@echo "  make up             # Levanta solo Postgres"
 	@echo "  make api-dev        # Instala deps, migra y arranca API"
 	@echo "  make mobile-start   # Arranca Expo"
+	@echo "  make mobile-devclient # Arranca Expo para Development Build"
+	@echo "  make ios-dev-build  # Lanza EAS build iOS development client"
 	@echo "  make down           # Baja Postgres"
 	@echo "  make reset-db       # Reinicia Postgres borrando volumen"
 	@echo "  make logs           # Logs de Postgres"
@@ -88,3 +90,10 @@ mobile-install:
 mobile-start: mobile-install
 	@cd "$(MOBILE_DIR)" && [ -f .env ] || cp .env.example .env
 	@cd "$(MOBILE_DIR)" && npm run start
+
+mobile-devclient: mobile-install
+	@cd "$(MOBILE_DIR)" && [ -f .env ] || cp .env.example .env
+	@cd "$(MOBILE_DIR)" && npm run devclient:start
+
+ios-dev-build: mobile-install
+	@cd "$(MOBILE_DIR)" && npm run eas:build:ios:dev
