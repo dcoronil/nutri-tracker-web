@@ -1,6 +1,6 @@
 import { memo } from "react";
 import { StyleSheet, Text, View } from "react-native";
-import Svg, { Path } from "react-native-svg";
+import Svg, { Defs, G, LinearGradient, Path, Rect, Stop } from "react-native-svg";
 
 export type BodyAvatarSvgProps = {
   sex: "male" | "female" | "other";
@@ -200,21 +200,54 @@ function formatSignedKg(value: number | null): string {
   return `${sign}${value.toFixed(2)} kg`;
 }
 
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
 export const BodyAvatarSvg = memo(function BodyAvatarSvg(props: BodyAvatarSvgProps) {
   const palette = paletteByBmiCategory(props.bmiCategory);
   const bodyFatLabel = props.bodyFatPercent != null ? `${props.bodyFatPercent.toFixed(1)}%` : "N/D";
   const silhouette = props.sex === "female" ? FEMALE_SILHOUETTE : MALE_SILHOUETTE;
+  const viewBoxParts = silhouette.viewBox.split(" ").map(Number);
+  const rawViewBoxWidth = viewBoxParts[2] ?? 600;
+  const rawViewBoxHeight = viewBoxParts[3] ?? 1600;
+  const viewBoxWidth = Number.isFinite(rawViewBoxWidth) ? rawViewBoxWidth : 600;
+  const viewBoxHeight = Number.isFinite(rawViewBoxHeight) ? rawViewBoxHeight : 1600;
+  const centerX = viewBoxWidth / 2;
+  const bmiShift = props.bmi != null ? (props.bmi - 22) * 0.012 : 0;
+  const fatShift = props.bodyFatPercent != null ? (props.bodyFatPercent - 20) * 0.0035 : 0;
+  const torsoScaleX = clamp(1 + bmiShift + fatShift, 0.84, 1.19);
+  const bmiLabel = props.bmiCategory ? props.bmiCategory.charAt(0).toUpperCase() + props.bmiCategory.slice(1) : "N/D";
 
   return (
     <View style={styles.wrap}>
       <View style={styles.canvasWrap}>
-        <Svg width="100%" height={430} viewBox={silhouette.viewBox} preserveAspectRatio="xMidYMin meet">
-          <Path d={silhouette.path} fill={palette.accent} fillOpacity={0.9} stroke={palette.contour} strokeWidth={2} />
+        <Svg width="100%" height={440} viewBox={silhouette.viewBox} preserveAspectRatio="xMidYMin meet">
+          <Defs>
+            <LinearGradient id="avatar_bg" x1="0" y1="0" x2="0" y2="1">
+              <Stop offset="0" stopColor="#151515" />
+              <Stop offset="0.5" stopColor="#0f0f0f" />
+              <Stop offset="1" stopColor="#0a0a0a" />
+            </LinearGradient>
+            <LinearGradient id="avatar_fill" x1="0" y1="0" x2="1" y2="1">
+              <Stop offset="0" stopColor={palette.accent} stopOpacity={0.88} />
+              <Stop offset="1" stopColor={palette.accent} stopOpacity={0.6} />
+            </LinearGradient>
+          </Defs>
+          <Rect x={0} y={0} width={viewBoxWidth} height={viewBoxHeight} fill="url(#avatar_bg)" />
+
+          <Path d={silhouette.path} fill="transparent" stroke={palette.contour} strokeOpacity={0.25} strokeWidth={3} />
+          <G transform={`translate(${centerX},0) scale(${torsoScaleX},1) translate(${-centerX},0)`}>
+            <Path d={silhouette.path} fill="url(#avatar_fill)" stroke={palette.contour} strokeWidth={1.4} />
+          </G>
         </Svg>
 
-        <View style={[styles.badge, { borderColor: palette.badgeBorder, backgroundColor: palette.badgeBg }]}> 
+        <View style={[styles.badge, { borderColor: palette.badgeBorder, backgroundColor: palette.badgeBg }]}>
           <Text style={styles.badgeLabel}>% grasa</Text>
           <Text style={styles.badgeValue}>{bodyFatLabel}</Text>
+        </View>
+        <View style={[styles.categoryPill, { borderColor: palette.badgeBorder, backgroundColor: palette.badgeBg }]}>
+          <Text style={[styles.categoryPillText, { color: palette.accent }]}>{bmiLabel}</Text>
         </View>
       </View>
 
@@ -225,7 +258,7 @@ export const BodyAvatarSvg = memo(function BodyAvatarSvg(props: BodyAvatarSvgPro
         </View>
         <View style={styles.metaItem}>
           <Text style={styles.metaLabel}>Categoria</Text>
-          <Text style={[styles.metaValue, { color: palette.accent }]}>{props.bmiCategory}</Text>
+          <Text style={[styles.metaValue, { color: palette.accent }]}>{bmiLabel}</Text>
         </View>
         <View style={styles.metaItem}>
           <Text style={styles.metaLabel}>Peso</Text>
@@ -242,66 +275,83 @@ export const BodyAvatarSvg = memo(function BodyAvatarSvg(props: BodyAvatarSvgPro
 
 const styles = StyleSheet.create({
   wrap: {
-    gap: 12,
+    gap: 14,
   },
   canvasWrap: {
     borderWidth: 1,
-    borderColor: "#2a2a2a",
-    borderRadius: 20,
-    backgroundColor: "#0f0f0f",
+    borderColor: "#2d2d2d",
+    borderRadius: 24,
+    backgroundColor: "#101010",
     overflow: "hidden",
     position: "relative",
     paddingHorizontal: 10,
-    paddingTop: 8,
-    paddingBottom: 4,
+    paddingTop: 10,
+    paddingBottom: 6,
   },
   badge: {
     position: "absolute",
-    top: 14,
+    top: 16,
     right: 14,
     borderWidth: 1,
-    borderRadius: 12,
-    paddingHorizontal: 12,
+    borderRadius: 14,
+    paddingHorizontal: 13,
     paddingVertical: 8,
-    minWidth: 82,
-    gap: 2,
+    minWidth: 90,
+    gap: 1,
+  },
+  categoryPill: {
+    position: "absolute",
+    left: 14,
+    top: 16,
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
   },
   badgeLabel: {
-    color: "#b3b3b3",
-    fontSize: 11,
-    fontWeight: "600",
+    color: "#adadad",
+    fontSize: 10,
+    fontWeight: "700",
+    letterSpacing: 0.2,
     textAlign: "right",
   },
   badgeValue: {
-    color: "#f1f1f1",
+    color: "#f4f4f4",
     fontSize: 16,
     fontWeight: "800",
     textAlign: "right",
   },
+  categoryPillText: {
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 0.3,
+  },
   metaRow: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 8,
+    gap: 9,
   },
   metaItem: {
     flex: 1,
-    minWidth: 128,
+    minWidth: 136,
     borderWidth: 1,
-    borderColor: "#2a2a2a",
-    borderRadius: 12,
-    backgroundColor: "#141414",
-    paddingHorizontal: 10,
-    paddingVertical: 9,
+    borderColor: "#2b2b2b",
+    borderRadius: 14,
+    backgroundColor: "#151515",
+    paddingHorizontal: 11,
+    paddingVertical: 10,
     gap: 2,
   },
   metaLabel: {
-    color: "#9f9f9f",
-    fontSize: 11,
-    fontWeight: "600",
+    color: "#a2a2a2",
+    fontSize: 10,
+    fontWeight: "700",
+    letterSpacing: 0.2,
+    textTransform: "uppercase",
   },
   metaValue: {
     color: "#f2f2f2",
     fontSize: 14,
-    fontWeight: "700",
+    fontWeight: "800",
   },
 });
