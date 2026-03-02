@@ -648,8 +648,54 @@ function parseApiError(error: unknown): string {
   if (message.includes("Invalid email")) {
     return "El email no tiene un formato válido.";
   }
+  if (message.includes("pending verification")) {
+    return "Ese email aún no está verificado. Completa primero la verificación del código.";
+  }
 
   return message;
+}
+
+function stringifyErrorDetail(detail: unknown): string | null {
+  if (detail === null || detail === undefined) {
+    return null;
+  }
+  if (typeof detail === "string") {
+    const trimmed = detail.trim();
+    return trimmed || null;
+  }
+  if (typeof detail === "number" || typeof detail === "boolean") {
+    return String(detail);
+  }
+  if (Array.isArray(detail)) {
+    const pieces = detail
+      .map((item) => stringifyErrorDetail(item))
+      .filter((item): item is string => Boolean(item));
+    if (pieces.length > 0) {
+      return pieces.join(" | ");
+    }
+    return null;
+  }
+  if (typeof detail === "object") {
+    const record = detail as Record<string, unknown>;
+    const fromMsg = stringifyErrorDetail(record.msg);
+    if (fromMsg) {
+      return fromMsg;
+    }
+    const fromMessage = stringifyErrorDetail(record.message);
+    if (fromMessage) {
+      return fromMessage;
+    }
+    const fromDetail = stringifyErrorDetail(record.detail);
+    if (fromDetail) {
+      return fromDetail;
+    }
+    try {
+      return JSON.stringify(detail);
+    } catch {
+      return "Error de servidor no legible.";
+    }
+  }
+  return null;
 }
 
 function formatDateLocal(day: Date): string {
@@ -694,6 +740,55 @@ function toPositiveNumberOrNull(input: string): number | null {
     return null;
   }
   return toOptionalNumber(trimmed);
+}
+
+function evaluatePasswordStrength(password: string): {
+  label: string;
+  color: string;
+  progress: number;
+  isStrongEnough: boolean;
+} {
+  if (!password) {
+    return {
+      label: "Empieza a escribir una contraseña",
+      color: theme.muted,
+      progress: 0,
+      isStrongEnough: false,
+    };
+  }
+
+  const hasLower = /[a-z]/.test(password);
+  const hasUpper = /[A-Z]/.test(password);
+  const hasNumber = /[0-9]/.test(password);
+  const hasSymbol = /[^A-Za-z0-9]/.test(password);
+  const categories = [hasLower, hasUpper, hasNumber, hasSymbol].filter(Boolean).length;
+  const longEnough = password.length >= 8;
+  const strongLength = password.length >= 12;
+
+  if (!longEnough || categories <= 1) {
+    return {
+      label: "Contraseña poco segura",
+      color: theme.danger,
+      progress: 34,
+      isStrongEnough: false,
+    };
+  }
+
+  if (!strongLength || categories <= 2) {
+    return {
+      label: "Contraseña débil",
+      color: theme.warning,
+      progress: 67,
+      isStrongEnough: true,
+    };
+  }
+
+  return {
+    label: "Contraseña segura",
+    color: theme.ok,
+    progress: 100,
+    isStrongEnough: true,
+  };
 }
 
 function bmiValue(weightKg: number | null, heightCm: number | null): number | null {
@@ -839,10 +934,8 @@ function AuthProvider({ children }: { children: import("react").ReactNode }) {
       }
 
       if (!response.ok) {
-        const detail =
-          typeof body === "object" && body !== null
-            ? ((body as { detail?: string }).detail ?? (body as { message?: string }).message)
-            : undefined;
+        const rawDetail = typeof body === "object" && body !== null ? (body as { detail?: unknown; message?: unknown }).detail ?? (body as { message?: unknown }).message : body;
+        const detail = stringifyErrorDetail(rawDetail);
         throw new Error(detail ?? `HTTP ${response.status}`);
       }
 
@@ -1666,7 +1759,15 @@ function InputField(props: {
 function PrimaryButton(props: { title: string; onPress: () => void; loading?: boolean; disabled?: boolean }) {
   const disabled = props.disabled || props.loading;
   return (
-    <Pressable onPress={props.onPress} disabled={disabled} style={[styles.primaryButton, disabled && styles.disabledButton]}>
+    <Pressable
+      onPress={props.onPress}
+      disabled={disabled}
+      style={({ pressed }) => [
+        styles.primaryButton,
+        pressed && !disabled && styles.primaryButtonPressed,
+        disabled && styles.disabledButton,
+      ]}
+    >
       {props.loading ? <ActivityIndicator color={theme.bg} /> : <Text style={styles.primaryButtonText}>{props.title}</Text>}
     </Pressable>
   );
@@ -1674,8 +1775,28 @@ function PrimaryButton(props: { title: string; onPress: () => void; loading?: bo
 
 function SecondaryButton(props: { title: string; onPress: () => void; disabled?: boolean }) {
   return (
-    <Pressable onPress={props.onPress} disabled={props.disabled} style={[styles.secondaryButton, props.disabled && styles.disabledButton]}>
+    <Pressable
+      onPress={props.onPress}
+      disabled={props.disabled}
+      style={({ pressed }) => [
+        styles.secondaryButton,
+        pressed && !props.disabled && styles.secondaryButtonPressed,
+        props.disabled && styles.disabledButton,
+      ]}
+    >
       <Text style={styles.secondaryButtonText}>{props.title}</Text>
+    </Pressable>
+  );
+}
+
+function GhostButton(props: { title: string; onPress: () => void; disabled?: boolean }) {
+  return (
+    <Pressable
+      onPress={props.onPress}
+      disabled={props.disabled}
+      style={({ pressed }) => [styles.ghostButton, pressed && !props.disabled && styles.ghostButtonPressed, props.disabled && styles.disabledButton]}
+    >
+      <Text style={styles.ghostButtonText}>{props.title}</Text>
     </Pressable>
   );
 }
@@ -1697,7 +1818,10 @@ function SectionHeader(props: {
         {props.subtitle ? <Text style={styles.sectionHeaderSubtitle}>{props.subtitle}</Text> : null}
       </View>
       {props.actionLabel && props.onAction ? (
-        <Pressable style={styles.sectionHeaderAction} onPress={props.onAction}>
+        <Pressable
+          style={({ pressed }) => [styles.sectionHeaderAction, pressed && styles.sectionHeaderActionPressed]}
+          onPress={props.onAction}
+        >
           <Text style={styles.sectionHeaderActionText}>{props.actionLabel}</Text>
         </Pressable>
       ) : null}
@@ -1757,12 +1881,13 @@ function AvatarCircle({ letter }: { letter: string }) {
   );
 }
 
-function EmptyState(props: { title: string; subtitle: string }) {
+function EmptyState(props: { title: string; subtitle: string; actionLabel?: string; onAction?: () => void }) {
   return (
-    <AppCard style={styles.emptyStateCard}>
+    <View style={styles.emptyStateCard}>
       <Text style={styles.emptyStateTitle}>{props.title}</Text>
       <Text style={styles.emptyStateSubtitle}>{props.subtitle}</Text>
-    </AppCard>
+      {props.actionLabel && props.onAction ? <GhostButton title={props.actionLabel} onPress={props.onAction} /> : null}
+    </View>
   );
 }
 
@@ -1839,7 +1964,7 @@ function AddActionCard(props: {
   onPress: () => void;
 }) {
   return (
-    <Pressable style={styles.addActionCard} onPress={props.onPress}>
+    <Pressable style={({ pressed }) => [styles.addActionCard, pressed && styles.addActionCardPressed]} onPress={props.onPress}>
       <Text style={styles.addActionTitle}>{props.title}</Text>
       <Text style={styles.addActionSubtitle}>{props.subtitle}</Text>
     </Pressable>
@@ -1871,14 +1996,33 @@ function SignupScreen({ onBack }: { onBack: () => void }) {
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [loading, setLoading] = useState(false);
+  const passwordStrength = useMemo(() => evaluatePasswordStrength(password), [password]);
+  const passwordStrengthAnim = useRef(new Animated.Value(0)).current;
+  const passwordStrengthWidth = useMemo(
+    () =>
+      passwordStrengthAnim.interpolate({
+        inputRange: [0, 1],
+        outputRange: ["0%", "100%"],
+      }),
+    [passwordStrengthAnim],
+  );
+
+  useEffect(() => {
+    Animated.timing(passwordStrengthAnim, {
+      toValue: passwordStrength.progress / 100,
+      duration: 240,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    }).start();
+  }, [passwordStrength.progress, passwordStrengthAnim]);
 
   const submit = async () => {
     if (!email.trim() || !password.trim()) {
       Alert.alert("Faltan datos", "Completa email y contraseña.");
       return;
     }
-    if (password.length < 8) {
-      Alert.alert("Contraseña", "Debe tener al menos 8 caracteres.");
+    if (!passwordStrength.isStrongEnough) {
+      Alert.alert("Contraseña", "La contraseña es poco segura. Usa una contraseña al menos débil o segura.");
       return;
     }
     if (password !== confirmPassword) {
@@ -1905,9 +2049,25 @@ function SignupScreen({ onBack }: { onBack: () => void }) {
 
           <InputField label="Email" value={email} onChangeText={setEmail} keyboardType="email-address" />
           <InputField label="Contraseña" value={password} onChangeText={setPassword} secureTextEntry />
+          {password.length > 0 ? (
+            <View style={styles.passwordStrengthWrap}>
+              <View style={styles.passwordStrengthTrack}>
+                <Animated.View
+                  style={[
+                    styles.passwordStrengthFill,
+                    {
+                      width: passwordStrengthWidth,
+                      backgroundColor: passwordStrength.color,
+                    },
+                  ]}
+                />
+              </View>
+              <Text style={[styles.passwordStrengthText, { color: passwordStrength.color }]}>{passwordStrength.label}</Text>
+            </View>
+          ) : null}
           <InputField label="Confirmar contraseña" value={confirmPassword} onChangeText={setConfirmPassword} secureTextEntry />
 
-          <PrimaryButton title="Crear cuenta" onPress={submit} loading={loading} />
+          <PrimaryButton title="Crear cuenta" onPress={submit} loading={loading} disabled={!passwordStrength.isStrongEnough} />
           <SecondaryButton title="Volver" onPress={onBack} />
         </ScrollView>
       </KeyboardAvoidingView>
@@ -2072,7 +2232,7 @@ function ChoiceRow<T extends string>(props: {
             <Pressable
               key={option.value}
               onPress={() => props.onChange(option.value)}
-              style={[styles.chip, active && styles.chipActive]}
+              style={({ pressed }) => [styles.chip, active && styles.chipActive, pressed && styles.chipPressed]}
             >
               <Text style={[styles.chipText, active && styles.chipTextActive]}>{option.label}</Text>
             </Pressable>
@@ -2479,14 +2639,19 @@ function MacroDonut({ segments, title }: { segments: Segment[]; title: string })
 
 function DashboardScreen({
   onOpenBodyProgress,
+  onQuickAddAction,
 }: {
   onOpenBodyProgress: () => void;
+  onQuickAddAction: (action: QuickAddAction) => void;
 }) {
   const auth = useAuth();
   const selectedDate = useMemo(() => formatDateLocal(new Date()), []);
   const [macroViewMode, setMacroViewMode] = useState<"rings" | "bars">("rings");
   const [summary, setSummary] = useState<DaySummary | null>(null);
   const [loadingSummary, setLoadingSummary] = useState(true);
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const [accountMenuVisible, setAccountMenuVisible] = useState(false);
+  const accountMenuAnim = useRef(new Animated.Value(0)).current;
 
   const loadSummary = useCallback(async () => {
     setLoadingSummary(true);
@@ -2503,6 +2668,53 @@ function DashboardScreen({
   useEffect(() => {
     void loadSummary();
   }, [loadSummary]);
+
+  const openAccountMenu = useCallback(() => {
+    if (accountMenuOpen) {
+      return;
+    }
+    setAccountMenuVisible(true);
+    setAccountMenuOpen(true);
+    accountMenuAnim.stopAnimation();
+    Animated.spring(accountMenuAnim, {
+      toValue: 1,
+      damping: 22,
+      stiffness: 240,
+      mass: 0.95,
+      useNativeDriver: true,
+    }).start();
+  }, [accountMenuAnim, accountMenuOpen]);
+
+  const closeAccountMenu = useCallback(
+    (onClosed?: () => void) => {
+      if (!accountMenuVisible) {
+        onClosed?.();
+        return;
+      }
+      setAccountMenuOpen(false);
+      accountMenuAnim.stopAnimation();
+      Animated.timing(accountMenuAnim, {
+        toValue: 0,
+        duration: 220,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }).start(({ finished }) => {
+        if (finished) {
+          setAccountMenuVisible(false);
+        }
+        onClosed?.();
+      });
+    },
+    [accountMenuAnim, accountMenuVisible],
+  );
+
+  const toggleAccountMenu = useCallback(() => {
+    if (accountMenuOpen) {
+      closeAccountMenu();
+      return;
+    }
+    openAccountMenu();
+  }, [accountMenuOpen, closeAccountMenu, openAccountMenu]);
 
   const now = useMemo(() => new Date(), []);
   const hour = now.getHours();
@@ -2546,6 +2758,18 @@ function DashboardScreen({
     { label: "Carbs", value: summary?.consumed.carbs_g ?? 0, color: theme.carbs },
     { label: "Grasas", value: summary?.consumed.fat_g ?? 0, color: theme.fats },
   ];
+  const accountMenuTranslateY = accountMenuAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [-14, 0],
+  });
+  const accountMenuScale = accountMenuAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.96, 1],
+  });
+  const accountMenuBackdropOpacity = accountMenuAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, 1],
+  });
 
   const confirmDeleteIntake = (intakeId: number) => {
     Alert.alert("Eliminar consumo", "Este registro se borrará del día actual.", [
@@ -2580,7 +2804,12 @@ function DashboardScreen({
           <Pressable style={styles.quickWeightBtn} onPress={onOpenBodyProgress}>
             <Text style={styles.quickWeightBtnText}>+</Text>
           </Pressable>
-          <AvatarCircle letter={displayName.slice(0, 1)} />
+          <Pressable
+            onPress={toggleAccountMenu}
+            style={({ pressed }) => [styles.avatarPressable, pressed && styles.avatarPressablePressed]}
+          >
+            <AvatarCircle letter={displayName.slice(0, 1)} />
+          </Pressable>
         </View>
 
         <AppCard style={[styles.heroCard, exceededKcal && styles.heroCardExceeded]}>
@@ -2603,6 +2832,55 @@ function DashboardScreen({
               label={`${summary?.intakes.length ?? 0} registro${(summary?.intakes.length ?? 0) === 1 ? "" : "s"}`}
               tone={summary?.intakes.length ? "default" : "warning"}
             />
+          </View>
+        </AppCard>
+
+        <AppCard>
+          <SectionHeader title="Acciones principales" subtitle="Registra en menos toques" />
+          <View style={styles.dashboardActionGrid}>
+            <Pressable
+              style={({ pressed }) => [styles.dashboardActionCard, pressed && styles.dashboardActionCardPressed]}
+              onPress={() => onQuickAddAction("barcode")}
+            >
+              <View style={[styles.dashboardActionIcon, { backgroundColor: "rgba(46,217,195,0.16)" }]}>
+                <QuickAddIcon action="barcode" />
+              </View>
+              <Text style={styles.dashboardActionTitle}>Escanear</Text>
+              <Text style={styles.dashboardActionSubtitle}>Código de barras</Text>
+            </Pressable>
+
+            <Pressable
+              style={({ pressed }) => [styles.dashboardActionCard, pressed && styles.dashboardActionCardPressed]}
+              onPress={() => onQuickAddAction("manual")}
+            >
+              <View style={[styles.dashboardActionIcon, { backgroundColor: "rgba(79,141,253,0.16)" }]}>
+                <QuickAddIcon action="manual" />
+              </View>
+              <Text style={styles.dashboardActionTitle}>Buscar</Text>
+              <Text style={styles.dashboardActionSubtitle}>Nombre o marca</Text>
+            </Pressable>
+
+            <Pressable
+              style={({ pressed }) => [styles.dashboardActionCard, pressed && styles.dashboardActionCardPressed]}
+              onPress={() => onQuickAddAction("meal_photo")}
+            >
+              <View style={[styles.dashboardActionIcon, { backgroundColor: "rgba(245,158,11,0.16)" }]}>
+                <QuickAddIcon action="meal_photo" />
+              </View>
+              <Text style={styles.dashboardActionTitle}>Foto comida</Text>
+              <Text style={styles.dashboardActionSubtitle}>Estimación IA</Text>
+            </Pressable>
+
+            <Pressable
+              style={({ pressed }) => [styles.dashboardActionCard, pressed && styles.dashboardActionCardPressed]}
+              onPress={onOpenBodyProgress}
+            >
+              <View style={[styles.dashboardActionIcon, { backgroundColor: "rgba(244,114,182,0.16)" }]}>
+                <Text style={styles.dashboardActionWeightIcon}>kg</Text>
+              </View>
+              <Text style={styles.dashboardActionTitle}>Peso</Text>
+              <Text style={styles.dashboardActionSubtitle}>Registrar ahora</Text>
+            </Pressable>
           </View>
         </AppCard>
 
@@ -2715,7 +2993,12 @@ function DashboardScreen({
           {loadingSummary ? <ActivityIndicator color={theme.accent} /> : null}
 
           {!loadingSummary && summary && summary.intakes.length === 0 ? (
-            <EmptyState title="Aún sin registros" subtitle="Escanea tu primer producto para empezar a construir tu día." />
+            <EmptyState
+              title="Todavía no has registrado comida hoy"
+              subtitle="Empieza con escaneo o búsqueda manual para activar tu progreso del día."
+              actionLabel="Escanear producto"
+              onAction={() => onQuickAddAction("barcode")}
+            />
           ) : null}
 
           {!loadingSummary && summary
@@ -2753,6 +3036,37 @@ function DashboardScreen({
           ))}
         </AppCard>
       </ScrollView>
+      {accountMenuVisible ? (
+        <View style={styles.accountMenuLayer} pointerEvents="box-none">
+          <Pressable style={styles.accountMenuBackdrop} onPress={() => closeAccountMenu()}>
+            <Animated.View style={[styles.accountMenuScrim, { opacity: accountMenuBackdropOpacity }]} />
+          </Pressable>
+          <Animated.View
+            style={[
+              styles.accountMenuContainer,
+              {
+                opacity: accountMenuAnim,
+                transform: [{ translateY: accountMenuTranslateY }, { scale: accountMenuScale }],
+              },
+            ]}
+          >
+            <Pressable style={styles.accountMenuCard} onPress={() => {}}>
+              <Text style={styles.accountMenuTitle}>Mi cuenta</Text>
+              <StatRow label="Email" value={auth.user?.email ?? "-"} />
+              <StatRow label="Email verificado" value={auth.user?.email_verified ? "Sí" : "No"} />
+              <StatRow label="Onboarding" value={auth.user?.onboarding_completed ? "Completado" : "Pendiente"} />
+              <SecondaryButton
+                title="Cerrar sesión"
+                onPress={() =>
+                  closeAccountMenu(() => {
+                    void auth.logout();
+                  })
+                }
+              />
+            </Pressable>
+          </Animated.View>
+        </View>
+      ) : null}
     </SafeAreaView>
   );
 }
@@ -2763,7 +3077,9 @@ function BodyProgressScreen() {
   const [savingWeight, setSavingWeight] = useState(false);
   const [savingMeasure, setSavingMeasure] = useState(false);
   const [range, setRange] = useState<"7d" | "30d" | "90d">("30d");
-  const [showQuickWeightForm, setShowQuickWeightForm] = useState(true);
+  const [showQuickWeightForm, setShowQuickWeightForm] = useState(false);
+  const [showMeasurementsForm, setShowMeasurementsForm] = useState(false);
+  const [showRecentLogs, setShowRecentLogs] = useState(true);
 
   const [summary, setSummary] = useState<BodySummary | null>(null);
   const [weightLogs, setWeightLogs] = useState<BodyWeightLog[]>([]);
@@ -2921,9 +3237,9 @@ function BodyProgressScreen() {
           </View>
           <Pressable
             onPress={() => setShowQuickWeightForm((current) => !current)}
-            style={styles.bodyHeaderActionBtn}
+            style={({ pressed }) => [styles.bodyHeaderActionBtn, pressed && styles.bodyHeaderActionBtnPressed]}
           >
-            <Text style={styles.bodyHeaderActionText}>Registrar peso</Text>
+            <Text style={styles.bodyHeaderActionText}>{showQuickWeightForm ? "Ocultar" : "Registrar peso"}</Text>
           </Pressable>
         </View>
 
@@ -2954,8 +3270,8 @@ function BodyProgressScreen() {
           <SectionHeader
             title="Resumen actual"
             subtitle="Peso, cambio semanal, IMC y % grasa"
-            actionLabel="Recargar"
-            onAction={() => void reload()}
+            actionLabel={showQuickWeightForm ? "Cerrar registro" : "Registrar peso"}
+            onAction={() => setShowQuickWeightForm((current) => !current)}
           />
           <View style={styles.bodySummaryGrid}>
             <MetricCard
@@ -2991,6 +3307,7 @@ function BodyProgressScreen() {
           {summary?.weekly_weight_goal_kg != null ? (
             <Text style={styles.helperText}>Objetivo semanal configurado: {summary.weekly_weight_goal_kg.toFixed(2)} kg.</Text>
           ) : null}
+          <GhostButton title="Recargar datos" onPress={() => void reload()} />
         </AppCard>
 
         <AppCard>
@@ -3035,7 +3352,12 @@ function BodyProgressScreen() {
           {loading ? (
             <ActivityIndicator color={theme.accent} />
           ) : filteredWeightLogs.length === 0 ? (
-            <EmptyState title="Sin registros de peso" subtitle="Añade tu primer peso para ver la tendencia." />
+            <EmptyState
+              title="Sin registros de peso"
+              subtitle="Añade tu primer peso para desbloquear tendencia y cambio semanal."
+              actionLabel="Registrar peso ahora"
+              onAction={() => setShowQuickWeightForm(true)}
+            />
           ) : (
             <View style={styles.weightChartWrap}>
               {filteredWeightLogs.slice(-16).map((entry) => {
@@ -3059,7 +3381,12 @@ function BodyProgressScreen() {
           {loading ? (
             <ActivityIndicator color={theme.accent} />
           ) : filteredBodyFatPoints.length === 0 ? (
-            <EmptyState title="Sin datos suficientes" subtitle="Registra cintura/cuello (y cadera si aplica)." />
+            <EmptyState
+              title="Sin datos suficientes"
+              subtitle="Registra cintura y cuello (más cadera si aplica) para estimar % grasa."
+              actionLabel="Añadir medidas"
+              onAction={() => setShowMeasurementsForm(true)}
+            />
           ) : (
             <View style={styles.weightChartWrap}>
               {filteredBodyFatPoints.slice(-16).map((entry) => {
@@ -3079,42 +3406,69 @@ function BodyProgressScreen() {
         </AppCard>
 
         <AppCard>
-          <SectionHeader title="Registros recientes" subtitle="Últimas entradas de peso y medidas" />
-          {recentWeights.length === 0 ? (
-            <EmptyState title="Sin peso registrado" subtitle="Usa 'Registrar peso' para empezar tu historial." />
-          ) : (
+          <SectionHeader
+            title="Registros recientes"
+            subtitle="Últimas entradas de peso y medidas"
+            actionLabel={showRecentLogs ? "Ocultar" : "Mostrar"}
+            onAction={() => setShowRecentLogs((current) => !current)}
+          />
+          {showRecentLogs ? (
             <>
-              {recentWeights.map((entry) => (
-                <View key={entry.id} style={styles.bodyRecordRow}>
-                  <View>
-                    <Text style={styles.bodyRecordTitle}>{entry.weight_kg.toFixed(1)} kg</Text>
-                    <Text style={styles.bodyRecordMeta}>{new Date(entry.created_at).toLocaleString()}</Text>
-                  </View>
-                  <Text style={styles.bodyRecordNote}>{entry.note?.trim() ? entry.note : "Sin nota"}</Text>
+              {recentWeights.length === 0 ? (
+                <EmptyState
+                  title="Sin peso registrado"
+                  subtitle="Usa 'Registrar peso' para empezar tu historial."
+                  actionLabel="Registrar peso"
+                  onAction={() => setShowQuickWeightForm(true)}
+                />
+              ) : (
+                <>
+                  {recentWeights.map((entry) => (
+                    <View key={entry.id} style={styles.bodyRecordRow}>
+                      <View>
+                        <Text style={styles.bodyRecordTitle}>{entry.weight_kg.toFixed(1)} kg</Text>
+                        <Text style={styles.bodyRecordMeta}>{new Date(entry.created_at).toLocaleString()}</Text>
+                      </View>
+                      <Text style={styles.bodyRecordNote}>{entry.note?.trim() ? entry.note : "Sin nota"}</Text>
+                    </View>
+                  ))}
+                </>
+              )}
+              {recentMeasurements.length ? (
+                <View style={styles.bodyMeasurementSummary}>
+                  <Text style={styles.bodyMeasurementSummaryTitle}>Últimas medidas</Text>
+                  {recentMeasurements.map((entry) => (
+                    <Text key={entry.id} style={styles.bodyMeasurementSummaryLine}>
+                      {new Date(entry.created_at).toLocaleDateString()} · Cintura {entry.waist_cm ?? "N/D"} · Cuello{" "}
+                      {entry.neck_cm ?? "N/D"} · Cadera {entry.hip_cm ?? "N/D"}
+                    </Text>
+                  ))}
                 </View>
-              ))}
+              ) : null}
             </>
+          ) : (
+            <Text style={styles.helperText}>Vista resumida activa. Pulsa "Mostrar" para ver el detalle.</Text>
           )}
-          {recentMeasurements.length ? (
-            <View style={styles.bodyMeasurementSummary}>
-              <Text style={styles.bodyMeasurementSummaryTitle}>Últimas medidas</Text>
-              {recentMeasurements.map((entry) => (
-                <Text key={entry.id} style={styles.bodyMeasurementSummaryLine}>
-                  {new Date(entry.created_at).toLocaleDateString()} · Cintura {entry.waist_cm ?? "N/D"} · Cuello{" "}
-                  {entry.neck_cm ?? "N/D"} · Cadera {entry.hip_cm ?? "N/D"}
-                </Text>
-              ))}
-            </View>
-          ) : null}
         </AppCard>
 
         <AppCard>
-          <SectionHeader title="Registrar medidas" subtitle="Opcional para mejorar estimación de % grasa" />
-          <InputField label="Cintura (cm)" value={waistInput} onChangeText={setWaistInput} keyboardType="numeric" />
-          <InputField label="Cuello (cm)" value={neckInput} onChangeText={setNeckInput} keyboardType="numeric" />
-          <InputField label="Cadera (cm)" value={hipInput} onChangeText={setHipInput} keyboardType="numeric" />
-          <PrimaryButton title="Guardar medidas" onPress={() => void saveMeasurement()} loading={savingMeasure} />
-          <Text style={styles.helperText}>Registros de medidas acumulados: {measurementLogs.length}</Text>
+          <SectionHeader
+            title="Registrar medidas"
+            subtitle="Opcional para mejorar estimación de % grasa"
+            actionLabel={showMeasurementsForm ? "Ocultar" : "Abrir"}
+            onAction={() => setShowMeasurementsForm((current) => !current)}
+          />
+          {showMeasurementsForm ? (
+            <>
+              <InputField label="Cintura (cm)" value={waistInput} onChangeText={setWaistInput} keyboardType="numeric" />
+              <InputField label="Cuello (cm)" value={neckInput} onChangeText={setNeckInput} keyboardType="numeric" />
+              <InputField label="Cadera (cm)" value={hipInput} onChangeText={setHipInput} keyboardType="numeric" />
+              <PrimaryButton title="Guardar medidas" onPress={() => void saveMeasurement()} loading={savingMeasure} />
+              <Text style={styles.helperText}>Registros de medidas acumulados: {measurementLogs.length}</Text>
+            </>
+          ) : (
+            <Text style={styles.helperText}>Añade medidas cuando quieras mejorar la precisión del % grasa.</Text>
+          )}
         </AppCard>
 
         <AppCard>
@@ -3312,7 +3666,7 @@ function HistoryScreen() {
   return (
     <SafeAreaView style={styles.screen}>
       <ScrollView contentContainerStyle={styles.mainScroll}>
-        <AppHeader title="History" subtitle="Actividad, adherencia y tendencias" />
+        <AppHeader title="Historial" subtitle="Actividad mensual, racha y detalle diario" />
 
         <AppCard>
           <SectionHeader title="Métricas últimos 7 días" />
@@ -3331,7 +3685,7 @@ function HistoryScreen() {
           <View style={styles.historyCalendarTopRow}>
             <View style={styles.historyCalendarTitleWrap}>
               <Text style={styles.historyCalendarTitle}>Calendario</Text>
-              <Text style={styles.historyCalendarSubtitle}>Historial mensual de comidas y peso</Text>
+              <Text style={styles.historyCalendarSubtitle}>Comidas y peso por día, en una vista mensual</Text>
             </View>
             <Pressable onPress={() => void load()} style={({ pressed }) => [styles.historyCalendarReloadBtn, pressed && styles.historyCalendarReloadBtnPressed]}>
               <Text style={styles.historyCalendarReloadText}>Recargar</Text>
@@ -3520,6 +3874,13 @@ function SettingsScreen() {
   const [unitMode, setUnitMode] = useState<"metric" | "imperial">("metric");
   const [aiKeyInput, setAiKeyInput] = useState("");
   const [aiKeyStatus, setAiKeyStatus] = useState<UserAIKeyStatus | null>(null);
+  const [openSections, setOpenSections] = useState({
+    goals: true,
+    profile: false,
+    ai: true,
+    data: false,
+    app: false,
+  });
 
   const [goalDraft, setGoalDraft] = useState({
     kcal_goal: "",
@@ -3599,6 +3960,10 @@ function SettingsScreen() {
   useEffect(() => {
     void loadMeta();
   }, [loadMeta]);
+
+  const toggleSection = (section: keyof typeof openSections) => {
+    setOpenSections((current) => ({ ...current, [section]: !current[section] }));
+  };
 
   const applyApi = async () => {
     const normalized = normalizeBaseUrl(apiDraft);
@@ -3834,215 +4199,270 @@ function SettingsScreen() {
   return (
     <SafeAreaView style={styles.screen}>
       <ScrollView contentContainerStyle={styles.mainScroll}>
-        <AppHeader title="Settings" subtitle="Cuenta, objetivos, perfil corporal, IA y datos" />
-
-        <AppCard>
-          <SectionHeader title="Cuenta" subtitle="Estado de autenticación" />
-          <StatRow label="Email" value={auth.user?.email ?? "-"} />
-          <StatRow label="Email verificado" value={auth.user?.email_verified ? "Sí" : "No"} />
-          <StatRow label="Onboarding" value={auth.user?.onboarding_completed ? "Completado" : "Pendiente"} />
-          <SecondaryButton title="Cerrar sesión" onPress={() => void auth.logout()} />
-        </AppCard>
+        <AppHeader title="Ajustes" subtitle="Objetivos, perfil corporal, IA y datos" />
 
         <AppCard>
           <SectionHeader
             title="Objetivos diarios"
-            subtitle="Ajusta kcal/proteína/grasa/carbs"
-            actionLabel="Recalcular recomendación"
-            onAction={useRecommendedGoals}
+            subtitle="Kcal y macros"
+            actionLabel={openSections.goals ? "Ocultar" : "Editar"}
+            onAction={() => toggleSection("goals")}
           />
-          {loadingMeta ? <ActivityIndicator color={theme.accent} /> : null}
-          <InputField
-            label="Kcal"
-            value={goalDraft.kcal_goal}
-            onChangeText={(value) => setGoalDraft((current) => ({ ...current, kcal_goal: value }))}
-            keyboardType="numeric"
-          />
-          <InputField
-            label="Proteína (g)"
-            value={goalDraft.protein_goal}
-            onChangeText={(value) => setGoalDraft((current) => ({ ...current, protein_goal: value }))}
-            keyboardType="numeric"
-          />
-          <InputField
-            label="Grasa (g)"
-            value={goalDraft.fat_goal}
-            onChangeText={(value) => setGoalDraft((current) => ({ ...current, fat_goal: value }))}
-            keyboardType="numeric"
-          />
-          <InputField
-            label="Carbs (g)"
-            value={goalDraft.carbs_goal}
-            onChangeText={(value) => setGoalDraft((current) => ({ ...current, carbs_goal: value }))}
-            keyboardType="numeric"
-          />
-          {recommendedGoal ? (
+          {openSections.goals ? (
+            <>
+              {loadingMeta ? <ActivityIndicator color={theme.accent} /> : null}
+              <InputField
+                label="Kcal"
+                value={goalDraft.kcal_goal}
+                onChangeText={(value) => setGoalDraft((current) => ({ ...current, kcal_goal: value }))}
+                keyboardType="numeric"
+              />
+              <InputField
+                label="Proteína (g)"
+                value={goalDraft.protein_goal}
+                onChangeText={(value) => setGoalDraft((current) => ({ ...current, protein_goal: value }))}
+                keyboardType="numeric"
+              />
+              <InputField
+                label="Grasa (g)"
+                value={goalDraft.fat_goal}
+                onChangeText={(value) => setGoalDraft((current) => ({ ...current, fat_goal: value }))}
+                keyboardType="numeric"
+              />
+              <InputField
+                label="Carbs (g)"
+                value={goalDraft.carbs_goal}
+                onChangeText={(value) => setGoalDraft((current) => ({ ...current, carbs_goal: value }))}
+                keyboardType="numeric"
+              />
+              <View style={styles.settingsInlineActions}>
+                <GhostButton title="Usar recomendación" onPress={useRecommendedGoals} />
+                <PrimaryButton title="Guardar objetivos" onPress={() => void saveGoals()} loading={savingGoals} />
+              </View>
+              {recommendedGoal ? (
+                <Text style={styles.helperText}>
+                  Recomendado: {recommendedGoal.kcal_goal} kcal | P {recommendedGoal.protein_goal} | G {recommendedGoal.fat_goal} | C{" "}
+                  {recommendedGoal.carbs_goal}
+                </Text>
+              ) : null}
+              {suggestedKcalAdjustment !== null ? (
+                <Text style={styles.helperText}>
+                  Ajuste sugerido por tendencia: {suggestedKcalAdjustment >= 0 ? "+" : ""}
+                  {suggestedKcalAdjustment.toFixed(0)} kcal/día
+                </Text>
+              ) : null}
+            </>
+          ) : (
             <Text style={styles.helperText}>
-              Recomendado: {recommendedGoal.kcal_goal} kcal | P {recommendedGoal.protein_goal} | G {recommendedGoal.fat_goal} | C{" "}
-              {recommendedGoal.carbs_goal}
+              {goalDraft.kcal_goal || "-"} kcal · P {goalDraft.protein_goal || "-"} · G {goalDraft.fat_goal || "-"} · C{" "}
+              {goalDraft.carbs_goal || "-"}
             </Text>
-          ) : null}
-          {suggestedKcalAdjustment !== null ? (
-            <Text style={styles.helperText}>
-              Ajuste sugerido por tendencia de peso: {suggestedKcalAdjustment >= 0 ? "+" : ""}
-              {suggestedKcalAdjustment.toFixed(0)} kcal/día
-            </Text>
-          ) : null}
-          <PrimaryButton title="Guardar objetivos" onPress={() => void saveGoals()} loading={savingGoals} />
+          )}
         </AppCard>
 
         <AppCard>
-          <SectionHeader title="Perfil corporal" subtitle="Datos base para cálculos" />
-          <InputField
-            label="Peso (kg)"
-            value={profileDraft.weight_kg}
-            onChangeText={(value) => setProfileDraft((current) => ({ ...current, weight_kg: value }))}
-            keyboardType="numeric"
+          <SectionHeader
+            title="Perfil corporal"
+            subtitle="Datos base para cálculos"
+            actionLabel={openSections.profile ? "Ocultar" : "Editar"}
+            onAction={() => toggleSection("profile")}
           />
-          <InputField
-            label="Altura (cm)"
-            value={profileDraft.height_cm}
-            onChangeText={(value) => setProfileDraft((current) => ({ ...current, height_cm: value }))}
-            keyboardType="numeric"
-          />
-          <InputField
-            label="Edad"
-            value={profileDraft.age}
-            onChangeText={(value) => setProfileDraft((current) => ({ ...current, age: value }))}
-            keyboardType="numeric"
-          />
-          <ChoiceRow
-            label="Sexo"
-            value={profileDraft.sex}
-            onChange={(value) => setProfileDraft((current) => ({ ...current, sex: value }))}
-            options={[
-              { label: "Masculino", value: "male" },
-              { label: "Femenino", value: "female" },
-              { label: "Otro", value: "other" },
-            ]}
-          />
-          <ChoiceRow
-            label="Actividad"
-            value={profileDraft.activity_level}
-            onChange={(value) => setProfileDraft((current) => ({ ...current, activity_level: value }))}
-            options={[
-              { label: "Sedentario", value: "sedentary" },
-              { label: "Ligero", value: "light" },
-              { label: "Moderado", value: "moderate" },
-              { label: "Activo", value: "active" },
-              { label: "Atleta", value: "athlete" },
-            ]}
-          />
-          <ChoiceRow
-            label="Objetivo"
-            value={profileDraft.goal_type}
-            onChange={(value) => setProfileDraft((current) => ({ ...current, goal_type: value }))}
-            options={[
-              { label: "Perder", value: "lose" },
-              { label: "Mantener", value: "maintain" },
-              { label: "Ganar", value: "gain" },
-            ]}
-          />
-          <InputField
-            label="Objetivo semanal de peso (kg)"
-            value={profileDraft.weekly_weight_goal_kg}
-            onChangeText={(value) => setProfileDraft((current) => ({ ...current, weekly_weight_goal_kg: value }))}
-            keyboardType="numeric"
-            placeholder="ej. 0.35"
-          />
-          <InputField
-            label="Cintura (cm)"
-            value={profileDraft.waist_cm}
-            onChangeText={(value) => setProfileDraft((current) => ({ ...current, waist_cm: value }))}
-            keyboardType="numeric"
-          />
-          <InputField
-            label="Cuello (cm)"
-            value={profileDraft.neck_cm}
-            onChangeText={(value) => setProfileDraft((current) => ({ ...current, neck_cm: value }))}
-            keyboardType="numeric"
-          />
-          <InputField
-            label="Cadera (cm)"
-            value={profileDraft.hip_cm}
-            onChangeText={(value) => setProfileDraft((current) => ({ ...current, hip_cm: value }))}
-            keyboardType="numeric"
-          />
-          <PrimaryButton title="Guardar perfil" onPress={() => void saveProfile()} loading={savingProfile} />
+          {openSections.profile ? (
+            <>
+              <InputField
+                label="Peso (kg)"
+                value={profileDraft.weight_kg}
+                onChangeText={(value) => setProfileDraft((current) => ({ ...current, weight_kg: value }))}
+                keyboardType="numeric"
+              />
+              <InputField
+                label="Altura (cm)"
+                value={profileDraft.height_cm}
+                onChangeText={(value) => setProfileDraft((current) => ({ ...current, height_cm: value }))}
+                keyboardType="numeric"
+              />
+              <InputField
+                label="Edad"
+                value={profileDraft.age}
+                onChangeText={(value) => setProfileDraft((current) => ({ ...current, age: value }))}
+                keyboardType="numeric"
+              />
+              <ChoiceRow
+                label="Sexo"
+                value={profileDraft.sex}
+                onChange={(value) => setProfileDraft((current) => ({ ...current, sex: value }))}
+                options={[
+                  { label: "Masculino", value: "male" },
+                  { label: "Femenino", value: "female" },
+                  { label: "Otro", value: "other" },
+                ]}
+              />
+              <ChoiceRow
+                label="Actividad"
+                value={profileDraft.activity_level}
+                onChange={(value) => setProfileDraft((current) => ({ ...current, activity_level: value }))}
+                options={[
+                  { label: "Sedentario", value: "sedentary" },
+                  { label: "Ligero", value: "light" },
+                  { label: "Moderado", value: "moderate" },
+                  { label: "Activo", value: "active" },
+                  { label: "Atleta", value: "athlete" },
+                ]}
+              />
+              <ChoiceRow
+                label="Objetivo"
+                value={profileDraft.goal_type}
+                onChange={(value) => setProfileDraft((current) => ({ ...current, goal_type: value }))}
+                options={[
+                  { label: "Perder", value: "lose" },
+                  { label: "Mantener", value: "maintain" },
+                  { label: "Ganar", value: "gain" },
+                ]}
+              />
+              <InputField
+                label="Objetivo semanal de peso (kg)"
+                value={profileDraft.weekly_weight_goal_kg}
+                onChangeText={(value) => setProfileDraft((current) => ({ ...current, weekly_weight_goal_kg: value }))}
+                keyboardType="numeric"
+                placeholder="ej. 0.35"
+              />
+              <InputField
+                label="Cintura (cm)"
+                value={profileDraft.waist_cm}
+                onChangeText={(value) => setProfileDraft((current) => ({ ...current, waist_cm: value }))}
+                keyboardType="numeric"
+              />
+              <InputField
+                label="Cuello (cm)"
+                value={profileDraft.neck_cm}
+                onChangeText={(value) => setProfileDraft((current) => ({ ...current, neck_cm: value }))}
+                keyboardType="numeric"
+              />
+              <InputField
+                label="Cadera (cm)"
+                value={profileDraft.hip_cm}
+                onChangeText={(value) => setProfileDraft((current) => ({ ...current, hip_cm: value }))}
+                keyboardType="numeric"
+              />
+              <PrimaryButton title="Guardar perfil" onPress={() => void saveProfile()} loading={savingProfile} />
+            </>
+          ) : (
+            <Text style={styles.helperText}>
+              {profileDraft.weight_kg || "-"} kg · {profileDraft.height_cm || "-"} cm · {profileDraft.sex}
+            </Text>
+          )}
         </AppCard>
 
         <AppCard>
-          <SectionHeader title="IA" subtitle="API key por usuario (BYOK)" />
-          <Text style={styles.helperText}>Tu clave se usa solo para procesar imágenes con IA.</Text>
-          <Text style={styles.helperText}>Proveedor activo: OpenAI</Text>
-          <InputField
-            label="API key"
-            value={aiKeyInput}
-            onChangeText={setAiKeyInput}
-            autoCapitalize="none"
-            secureTextEntry
-            placeholder="sk-..."
+          <SectionHeader
+            title="IA"
+            subtitle="Clave por usuario para funciones de imagen"
+            actionLabel={openSections.ai ? "Ocultar" : "Configurar"}
+            onAction={() => toggleSection("ai")}
           />
-          <Text style={styles.helperText}>
-            Estado: {aiKeyStatus?.configured ? "configurada" : "sin configurar"}{" "}
-            {aiKeyStatus?.key_hint ? `(${aiKeyStatus.key_hint})` : ""}
-          </Text>
-          <PrimaryButton title="Guardar clave" onPress={() => void saveAIKey()} loading={savingAIKey} />
-          <SecondaryButton
-            title="Probar clave"
-            onPress={() => void testAIKey()}
-            disabled={testingAIKey || savingAIKey || deletingAIKey}
-          />
-          <SecondaryButton
-            title="Eliminar clave"
-            onPress={() => void deleteAIKey()}
-            disabled={deletingAIKey || savingAIKey || testingAIKey || !aiKeyStatus?.configured}
-          />
+          {openSections.ai ? (
+            <>
+              <Text style={styles.helperText}>Tu clave se usa solo para procesar imágenes. Nunca se muestra completa.</Text>
+              <Text style={styles.helperText}>Proveedor activo: OpenAI</Text>
+              <InputField
+                label="API key"
+                value={aiKeyInput}
+                onChangeText={setAiKeyInput}
+                autoCapitalize="none"
+                secureTextEntry
+                placeholder="sk-..."
+              />
+              <Text style={styles.helperText}>
+                Estado: {aiKeyStatus?.configured ? "configurada" : "sin configurar"}{" "}
+                {aiKeyStatus?.key_hint ? `(${aiKeyStatus.key_hint})` : ""}
+              </Text>
+              <PrimaryButton title="Guardar clave" onPress={() => void saveAIKey()} loading={savingAIKey} />
+              <SecondaryButton
+                title="Probar clave"
+                onPress={() => void testAIKey()}
+                disabled={testingAIKey || savingAIKey || deletingAIKey}
+              />
+              <SecondaryButton
+                title="Eliminar clave"
+                onPress={() => void deleteAIKey()}
+                disabled={deletingAIKey || savingAIKey || testingAIKey || !aiKeyStatus?.configured}
+              />
+            </>
+          ) : (
+            <Text style={styles.helperText}>
+              Estado actual: {aiKeyStatus?.configured ? "clave configurada" : "sin clave configurada"}.
+            </Text>
+          )}
         </AppCard>
 
         {DEV_SETTINGS_MODE ? (
           <AppCard>
-            <SectionHeader title="App (dev)" subtitle="Conectividad y preferencias técnicas" />
-            <Text style={styles.sectionTitle}>API base URL</Text>
-            <InputField label="URL" value={apiDraft} onChangeText={setApiDraft} autoCapitalize="none" />
-            <PrimaryButton title="Guardar y probar" onPress={() => void applyApi()} loading={checking} />
-            <ChoiceRow
-              label="Tema"
-              value={themeMode}
-              onChange={setThemeMode}
-              options={[
-                { label: "Dark", value: "dark" },
-                { label: "Light (futuro)", value: "light" },
-              ]}
+            <SectionHeader
+              title="App (dev)"
+              subtitle="Conectividad y preferencias técnicas"
+              actionLabel={openSections.app ? "Ocultar" : "Abrir"}
+              onAction={() => toggleSection("app")}
             />
-            <ChoiceRow
-              label="Unidades"
-              value={unitMode}
-              onChange={setUnitMode}
-              options={[
-                { label: "Métrico", value: "metric" },
-                { label: "Imperial (futuro)", value: "imperial" },
-              ]}
-            />
+            {openSections.app ? (
+              <>
+                <Text style={styles.sectionTitle}>API base URL</Text>
+                <InputField label="URL" value={apiDraft} onChangeText={setApiDraft} autoCapitalize="none" />
+                <PrimaryButton title="Guardar y probar" onPress={() => void applyApi()} loading={checking} />
+                <ChoiceRow
+                  label="Tema"
+                  value={themeMode}
+                  onChange={setThemeMode}
+                  options={[
+                    { label: "Dark", value: "dark" },
+                    { label: "Light (futuro)", value: "light" },
+                  ]}
+                />
+                <ChoiceRow
+                  label="Unidades"
+                  value={unitMode}
+                  onChange={setUnitMode}
+                  options={[
+                    { label: "Métrico", value: "metric" },
+                    { label: "Imperial (futuro)", value: "imperial" },
+                  ]}
+                />
+              </>
+            ) : (
+              <Text style={styles.helperText}>Opciones técnicas ocultas (modo desarrollador).</Text>
+            )}
           </AppCard>
         ) : null}
 
         <AppCard>
-          <SectionHeader title="Datos" subtitle="Exportación y utilidades" />
-          <SecondaryButton title="Exportar datos JSON" onPress={() => void exportData()} />
-          <SecondaryButton title="Exportar resumen CSV" onPress={() => void exportCsv()} />
-          <SecondaryButton title="Compartir resumen semanal" onPress={() => void shareWeeklySummary()} />
-          <SecondaryButton title="Reset demo data (stub)" onPress={() => Alert.alert("Datos", "Stub listo. Pendiente endpoint de borrado seguro.")} />
-          <SectionHeader title="Coach hints activos" />
-          {bodyHints.length ? (
-            bodyHints.map((hint) => (
-              <View key={hint} style={styles.insightRow}>
-                <View style={styles.insightDot} />
-                <Text style={styles.helperText}>{hint}</Text>
-              </View>
-            ))
+          <SectionHeader
+            title="Datos"
+            subtitle="Exportación y utilidades"
+            actionLabel={openSections.data ? "Ocultar" : "Abrir"}
+            onAction={() => toggleSection("data")}
+          />
+          {openSections.data ? (
+            <>
+              <SecondaryButton title="Exportar datos JSON" onPress={() => void exportData()} />
+              <SecondaryButton title="Exportar resumen CSV" onPress={() => void exportCsv()} />
+              <SecondaryButton title="Compartir resumen semanal" onPress={() => void shareWeeklySummary()} />
+              <SecondaryButton
+                title="Reset demo data (stub)"
+                onPress={() => Alert.alert("Datos", "Stub listo. Pendiente endpoint de borrado seguro.")}
+              />
+              <SectionHeader title="Coach hints activos" />
+              {bodyHints.length ? (
+                bodyHints.map((hint) => (
+                  <View key={hint} style={styles.insightRow}>
+                    <View style={styles.insightDot} />
+                    <Text style={styles.helperText}>{hint}</Text>
+                  </View>
+                ))
+              ) : (
+                <Text style={styles.helperText}>Sin hints críticos por ahora.</Text>
+              )}
+            </>
           ) : (
-            <Text style={styles.helperText}>Sin hints críticos por ahora.</Text>
+            <Text style={styles.helperText}>Exportes y utilidades avanzadas disponibles.</Text>
           )}
         </AppCard>
       </ScrollView>
@@ -5724,7 +6144,7 @@ function QuickAddIcon(props: { action: QuickAddAction }) {
 
 function QuickAddCard(props: { action: QuickAddAction; title: string; subtitle: string; onPress: () => void; accent: string }) {
   return (
-    <Pressable style={styles.quickAddCard} onPress={props.onPress}>
+    <Pressable style={({ pressed }) => [styles.quickAddCard, pressed && styles.quickAddCardPressed]} onPress={props.onPress}>
       <View style={[styles.quickAddIconWrap, { backgroundColor: props.accent }]}>
         <QuickAddIcon action={props.action} />
       </View>
@@ -5798,6 +6218,19 @@ function MainAppTabs() {
     });
   };
 
+  const launchActionFromPanel = useCallback(
+    (action: QuickAddAction) => {
+      closeQuickAdd(() => {
+        setTab("add");
+        setLaunchAction({
+          requestId: Date.now(),
+          action,
+        });
+      });
+    },
+    [closeQuickAdd],
+  );
+
   const toggleQuickAdd = useCallback(() => {
     if (quickAddOpen) {
       closeQuickAdd();
@@ -5827,7 +6260,7 @@ function MainAppTabs() {
     <SafeAreaView style={styles.screen}>
       <View style={styles.flex1}>
         {tab === "dashboard" ? (
-          <DashboardScreen onOpenBodyProgress={() => setTab("body")} />
+          <DashboardScreen onOpenBodyProgress={() => setTab("body")} onQuickAddAction={launchActionFromPanel} />
         ) : null}
         {tab === "add" ? (
           <AddScreen
@@ -5977,18 +6410,18 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   headerWrap: {
-    gap: 6,
+    gap: 5,
   },
   headerTitle: {
     color: theme.text,
-    fontSize: 30,
+    fontSize: 31,
     fontWeight: "800",
-    letterSpacing: 0.3,
+    letterSpacing: 0.1,
   },
   headerSubtitle: {
     color: theme.muted,
     fontSize: 13,
-    lineHeight: 19,
+    lineHeight: 20,
   },
   authScroll: {
     padding: 20,
@@ -6020,57 +6453,108 @@ const styles = StyleSheet.create({
     lineHeight: 22,
   },
   fieldWrap: {
-    gap: 8,
+    gap: 7,
   },
   fieldLabel: {
     color: theme.text,
-    fontSize: 13,
-    fontWeight: "600",
+    fontSize: 12,
+    fontWeight: "700",
+    letterSpacing: 0.2,
+    textTransform: "uppercase",
   },
   input: {
     borderWidth: 1,
     borderColor: theme.border,
-    borderRadius: 14,
+    borderRadius: 16,
     paddingHorizontal: 14,
-    paddingVertical: 12,
+    paddingVertical: 13,
     color: theme.text,
-    backgroundColor: theme.panelSoft,
+    backgroundColor: "#151515",
+    fontSize: 15,
   },
   primaryButton: {
     backgroundColor: theme.accent,
     borderWidth: 1,
     borderColor: theme.accent,
-    borderRadius: 16,
-    paddingVertical: 15,
+    borderRadius: 17,
+    minHeight: 50,
+    paddingVertical: 13,
     alignItems: "center",
     justifyContent: "center",
+    shadowColor: "#ffffff",
+    shadowOpacity: 0.12,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 2,
+  },
+  primaryButtonPressed: {
+    opacity: 0.92,
+    transform: [{ scale: 0.985 }],
   },
   primaryButtonText: {
     color: "#050505",
     fontSize: 15,
-    fontWeight: "700",
+    fontWeight: "800",
   },
   secondaryButton: {
     borderWidth: 1,
     borderColor: theme.border,
     borderRadius: 16,
-    paddingVertical: 12,
+    minHeight: 46,
+    paddingVertical: 11,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: theme.panelSoft,
   },
+  secondaryButtonPressed: {
+    backgroundColor: "#1e1e1e",
+    transform: [{ scale: 0.985 }],
+  },
   secondaryButtonText: {
     color: theme.text,
-    fontWeight: "600",
+    fontWeight: "700",
     fontSize: 14,
   },
+  ghostButton: {
+    borderRadius: 14,
+    paddingVertical: 11,
+    paddingHorizontal: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  ghostButtonPressed: {
+    backgroundColor: "rgba(255,255,255,0.06)",
+  },
+  ghostButtonText: {
+    color: theme.muted,
+    fontSize: 13,
+    fontWeight: "700",
+  },
   disabledButton: {
-    opacity: 0.6,
+    opacity: 0.55,
   },
   helperText: {
     color: theme.muted,
     fontSize: 13,
-    lineHeight: 19,
+    lineHeight: 20,
+  },
+  passwordStrengthWrap: {
+    marginTop: -4,
+    gap: 6,
+  },
+  passwordStrengthTrack: {
+    height: 6,
+    borderRadius: 999,
+    backgroundColor: "#2b2b2f",
+    overflow: "hidden",
+  },
+  passwordStrengthFill: {
+    height: "100%",
+    borderRadius: 999,
+  },
+  passwordStrengthText: {
+    fontSize: 12,
+    fontWeight: "700",
   },
   devHint: {
     color: theme.warning,
@@ -6090,6 +6574,10 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     backgroundColor: theme.panelSoft,
   },
+  chipPressed: {
+    opacity: 0.85,
+    transform: [{ scale: 0.98 }],
+  },
   chipActive: {
     borderColor: theme.accent,
     backgroundColor: theme.accentSoft,
@@ -6103,49 +6591,54 @@ const styles = StyleSheet.create({
     color: theme.text,
   },
   appCard: {
-    borderRadius: 24,
+    borderRadius: 22,
     borderWidth: 1,
-    borderColor: theme.border,
-    backgroundColor: theme.panel,
-    padding: 18,
-    gap: 14,
+    borderColor: "#222222",
+    backgroundColor: "#121212",
+    padding: 17,
+    gap: 13,
     shadowColor: "#000",
-    shadowOpacity: 0.22,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.24,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 7 },
     elevation: 3,
   },
   sectionHeaderWrap: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 10,
+    gap: 12,
   },
   sectionHeaderLeft: {
     flex: 1,
-    gap: 2,
+    gap: 3,
   },
   sectionHeaderTitle: {
     color: theme.text,
-    fontSize: 17,
-    fontWeight: "700",
+    fontSize: 18,
+    fontWeight: "800",
+    letterSpacing: -0.1,
   },
   sectionHeaderSubtitle: {
     color: theme.muted,
     fontSize: 12,
+    lineHeight: 17,
   },
   sectionHeaderAction: {
-    borderWidth: 1,
-    borderColor: theme.border,
-    backgroundColor: theme.panelSoft,
+    borderWidth: 0,
+    backgroundColor: "transparent",
     borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
+    paddingHorizontal: 9,
+    paddingVertical: 6,
+  },
+  sectionHeaderActionPressed: {
+    backgroundColor: "rgba(255,255,255,0.08)",
   },
   sectionHeaderActionText: {
-    color: theme.text,
+    color: "#d6d6d6",
     fontSize: 12,
     fontWeight: "700",
+    letterSpacing: 0.2,
   },
   statPill: {
     borderRadius: 999,
@@ -6241,25 +6734,73 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  avatarPressable: {
+    borderRadius: 999,
+  },
+  avatarPressablePressed: {
+    opacity: 0.85,
+    transform: [{ scale: 0.97 }],
+  },
   avatarText: {
     color: theme.text,
     fontWeight: "800",
     fontSize: 15,
   },
+  accountMenuLayer: {
+    ...StyleSheet.absoluteFillObject,
+    paddingHorizontal: 16,
+    paddingTop: 68,
+    alignItems: "flex-end",
+  },
+  accountMenuBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  accountMenuScrim: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.44)",
+  },
+  accountMenuContainer: {
+    width: "86%",
+    maxWidth: 340,
+  },
+  accountMenuCard: {
+    borderWidth: 1,
+    borderColor: theme.border,
+    borderRadius: 18,
+    backgroundColor: "#15181f",
+    padding: 14,
+    gap: 10,
+  },
+  accountMenuTitle: {
+    color: theme.text,
+    fontSize: 15,
+    fontWeight: "800",
+    letterSpacing: 0.2,
+  },
   emptyStateCard: {
     alignItems: "center",
     justifyContent: "center",
+    borderWidth: 1,
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 16,
+    backgroundColor: "#101010",
+    borderStyle: "dashed",
+    borderColor: "#2e2e2e",
+    minHeight: 128,
+    gap: 6,
   },
   emptyStateTitle: {
     color: theme.text,
-    fontWeight: "700",
+    fontWeight: "800",
     fontSize: 15,
+    textAlign: "center",
   },
   emptyStateSubtitle: {
     color: theme.muted,
     fontSize: 13,
     textAlign: "center",
-    lineHeight: 19,
+    lineHeight: 20,
   },
   sectionCard: {
     borderRadius: 24,
@@ -6355,9 +6896,10 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   mainScroll: {
-    padding: 16,
-    gap: 14,
-    paddingBottom: 90,
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    gap: 16,
+    paddingBottom: 104,
   },
   dashboardHeaderRow: {
     flexDirection: "row",
@@ -6427,28 +6969,48 @@ const styles = StyleSheet.create({
     gap: 8,
     flexWrap: "wrap",
   },
-  dashboardQuickActionsRow: {
+  dashboardActionGrid: {
     flexDirection: "row",
+    flexWrap: "wrap",
     gap: 10,
   },
-  dashboardQuickActionBtn: {
-    flex: 1,
+  dashboardActionCard: {
+    width: "48%",
     borderWidth: 1,
-    borderColor: theme.border,
+    borderColor: "#2a2a2a",
     borderRadius: 16,
-    backgroundColor: theme.panelSoft,
-    paddingVertical: 14,
+    backgroundColor: "#171717",
+    paddingVertical: 12,
     paddingHorizontal: 12,
-    gap: 4,
+    gap: 5,
+    minHeight: 108,
   },
-  dashboardQuickActionTitle: {
+  dashboardActionCardPressed: {
+    opacity: 0.9,
+    transform: [{ scale: 0.985 }],
+  },
+  dashboardActionIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  dashboardActionWeightIcon: {
     color: theme.text,
-    fontWeight: "700",
+    fontSize: 13,
+    fontWeight: "800",
+    letterSpacing: 0.2,
+  },
+  dashboardActionTitle: {
+    color: theme.text,
+    fontWeight: "800",
     fontSize: 14,
   },
-  dashboardQuickActionSub: {
+  dashboardActionSubtitle: {
     color: theme.muted,
-    fontSize: 12,
+    fontSize: 11,
+    lineHeight: 15,
   },
   macroToggleRow: {
     flexDirection: "row",
@@ -6509,7 +7071,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 12,
+    gap: 14,
   },
   bodyPageHeaderCopy: {
     flex: 1,
@@ -6527,16 +7089,21 @@ const styles = StyleSheet.create({
   },
   bodyHeaderActionBtn: {
     borderWidth: 1,
-    borderColor: theme.border,
-    borderRadius: 12,
-    backgroundColor: theme.panelSoft,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
+    borderColor: "#2b2b2b",
+    borderRadius: 14,
+    backgroundColor: "#161616",
+    paddingHorizontal: 13,
+    paddingVertical: 10,
+  },
+  bodyHeaderActionBtnPressed: {
+    opacity: 0.88,
+    transform: [{ scale: 0.98 }],
   },
   bodyHeaderActionText: {
     color: theme.text,
     fontSize: 12,
-    fontWeight: "700",
+    fontWeight: "800",
+    letterSpacing: 0.2,
   },
   bodyQuickWeightRow: {
     flexDirection: "row",
@@ -6553,7 +7120,7 @@ const styles = StyleSheet.create({
   bodySummaryGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 8,
+    gap: 9,
   },
   bodyLegendRow: {
     flexDirection: "row",
@@ -6622,10 +7189,10 @@ const styles = StyleSheet.create({
   weightChartWrap: {
     minHeight: 126,
     borderWidth: 1,
-    borderColor: theme.border,
-    borderRadius: 14,
-    backgroundColor: theme.panelSoft,
-    padding: 10,
+    borderColor: "#2a2a2a",
+    borderRadius: 16,
+    backgroundColor: "#161616",
+    padding: 11,
     flexDirection: "row",
     alignItems: "flex-end",
     gap: 6,
@@ -6670,9 +7237,9 @@ const styles = StyleSheet.create({
   },
   bodyRecordRow: {
     borderWidth: 1,
-    borderColor: theme.border,
-    borderRadius: 12,
-    backgroundColor: theme.panelSoft,
+    borderColor: "#2b2b2b",
+    borderRadius: 14,
+    backgroundColor: "#171717",
     paddingHorizontal: 12,
     paddingVertical: 10,
     flexDirection: "row",
@@ -6699,9 +7266,9 @@ const styles = StyleSheet.create({
   bodyMeasurementSummary: {
     marginTop: 8,
     borderWidth: 1,
-    borderColor: theme.border,
-    borderRadius: 12,
-    backgroundColor: theme.panelSoft,
+    borderColor: "#2b2b2b",
+    borderRadius: 14,
+    backgroundColor: "#151515",
     padding: 10,
     gap: 4,
   },
@@ -6966,14 +7533,15 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
   },
   historyCalendarCard: {
-    gap: 14,
+    gap: 16,
+    backgroundColor: "#111111",
   },
   historyCalendarTopRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     gap: 12,
-    marginBottom: 2,
+    marginBottom: 0,
   },
   historyCalendarTitleWrap: {
     flex: 1,
@@ -6981,13 +7549,14 @@ const styles = StyleSheet.create({
   },
   historyCalendarTitle: {
     color: theme.text,
-    fontSize: 19,
+    fontSize: 20,
     fontWeight: "800",
-    letterSpacing: -0.2,
+    letterSpacing: -0.3,
   },
   historyCalendarSubtitle: {
-    color: "#8b8b93",
+    color: "#95959d",
     fontSize: 12,
+    lineHeight: 17,
   },
   historyCalendarReloadBtn: {
     paddingHorizontal: 6,
@@ -6998,7 +7567,7 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.08)",
   },
   historyCalendarReloadText: {
-    color: "#d4d4d8",
+    color: "#dfdfe2",
     fontSize: 12,
     fontWeight: "700",
     letterSpacing: 0.2,
@@ -7008,8 +7577,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     paddingHorizontal: 2,
-    paddingTop: 4,
-    paddingBottom: 4,
+    paddingTop: 2,
+    paddingBottom: 2,
   },
   historyCalendarArrowTouch: {
     width: 36,
@@ -7030,20 +7599,20 @@ const styles = StyleSheet.create({
   historyCalendarStreakBadge: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
+    gap: 11,
     borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
+    paddingHorizontal: 13,
+    paddingVertical: 8,
   },
   historyCalendarStreakBadgeActive: {
-    backgroundColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "rgba(255,255,255,0.09)",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.12)",
+    borderColor: "rgba(255,255,255,0.16)",
   },
   historyCalendarStreakBadgeIdle: {
-    backgroundColor: "rgba(255,255,255,0.03)",
+    backgroundColor: "rgba(255,255,255,0.035)",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
+    borderColor: "rgba(255,255,255,0.11)",
   },
   historyCalendarStreakTextWrap: {
     flex: 1,
@@ -7051,7 +7620,7 @@ const styles = StyleSheet.create({
   },
   historyCalendarStreakTitle: {
     color: theme.text,
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: "800",
   },
   historyCalendarStreakSubtitle: {
@@ -7079,8 +7648,8 @@ const styles = StyleSheet.create({
   historyWeekDaysRow: {
     flexDirection: "row",
     justifyContent: "space-between",
-    paddingHorizontal: 6,
-    marginTop: 2,
+    paddingHorizontal: 7,
+    marginTop: 0,
   },
   historyWeekDayLabel: {
     width: `${100 / 7}%`,
@@ -7092,16 +7661,16 @@ const styles = StyleSheet.create({
   },
   historyCalendarMonthLabel: {
     color: theme.text,
-    fontSize: 17,
-    fontWeight: "700",
+    fontSize: 18,
+    fontWeight: "800",
     letterSpacing: -0.2,
     textTransform: "capitalize",
   },
   historyCalendarGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 6,
-    marginTop: 4,
+    gap: 7,
+    marginTop: 2,
   },
   historyCalendarCellEmpty: {
     width: "13.2%",
@@ -7112,10 +7681,10 @@ const styles = StyleSheet.create({
   historyCalendarCell: {
     width: "13.2%",
     aspectRatio: 1,
-    borderRadius: 12,
+    borderRadius: 13,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.035)",
-    backgroundColor: "#101010",
+    borderColor: "rgba(255,255,255,0.03)",
+    backgroundColor: "#131313",
     paddingHorizontal: 6,
     paddingVertical: 5,
     justifyContent: "space-between",
@@ -7125,28 +7694,28 @@ const styles = StyleSheet.create({
     transform: [{ scale: 0.98 }],
   },
   historyCalendarCellFilled: {
-    borderColor: "rgba(255,255,255,0.07)",
-    backgroundColor: "#141414",
+    borderColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "#171717",
   },
   historyCalendarCellHasWeight: {
-    backgroundColor: "#13171c",
+    backgroundColor: "#151a1f",
   },
   historyCalendarCellToday: {
-    borderColor: "rgba(255,255,255,0.22)",
+    borderColor: "rgba(255,255,255,0.28)",
   },
   historyCalendarCellActive: {
-    borderColor: "rgba(255,255,255,0.92)",
-    backgroundColor: "#1a1a1a",
+    borderColor: "rgba(255,255,255,0.94)",
+    backgroundColor: "#1d1d1d",
     shadowColor: "#ffffff",
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
+    shadowOpacity: 0.1,
+    shadowRadius: 9,
     shadowOffset: { width: 0, height: 1 },
     elevation: 2,
   },
   historyCalendarDayText: {
     color: "#d9d9de",
     fontSize: 12,
-    fontWeight: "600",
+    fontWeight: "700",
   },
   historyCalendarDayTextToday: {
     color: "#ffffff",
@@ -7164,14 +7733,14 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   historyCalendarFoodDot: {
-    width: 5,
-    height: 5,
+    width: 4,
+    height: 4,
     borderRadius: 999,
     backgroundColor: "#ededf0",
   },
   historyCalendarWeightDot: {
-    width: 6,
-    height: 6,
+    width: 5,
+    height: 5,
     borderRadius: 999,
     borderWidth: 1,
     borderColor: theme.kcal,
@@ -7180,7 +7749,7 @@ const styles = StyleSheet.create({
   historyLegendRow: {
     flexDirection: "row",
     gap: 14,
-    marginTop: 8,
+    marginTop: 4,
     marginBottom: 2,
   },
   historyLegendItem: {
@@ -7260,6 +7829,10 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "600",
   },
+  settingsInlineActions: {
+    gap: 8,
+    marginTop: 2,
+  },
   addHubPane: {
     gap: 12,
     paddingBottom: 100,
@@ -7272,6 +7845,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 18,
     gap: 6,
+  },
+  addActionCardPressed: {
+    opacity: 0.9,
+    transform: [{ scale: 0.985 }],
   },
   addActionTitle: {
     color: theme.text,
@@ -7722,6 +8299,10 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     gap: 8,
   },
+  quickAddCardPressed: {
+    opacity: 0.92,
+    transform: [{ scale: 0.985 }],
+  },
   quickAddIconWrap: {
     width: 56,
     height: 56,
@@ -7745,21 +8326,21 @@ const styles = StyleSheet.create({
     position: "absolute",
     left: 14,
     right: 14,
-    bottom: 12,
+    bottom: 10,
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: theme.panel,
+    backgroundColor: "#101010",
     borderRadius: 18,
     borderWidth: 1,
-    borderColor: theme.border,
+    borderColor: "#252525",
     paddingHorizontal: 8,
-    paddingTop: 8,
-    paddingBottom: 10,
+    paddingTop: 7,
+    paddingBottom: 9,
     gap: 0,
   },
   tabItem: {
     flex: 1,
-    minHeight: 54,
+    minHeight: 52,
     paddingVertical: 6,
     borderRadius: 12,
     alignItems: "center",
@@ -7773,8 +8354,8 @@ const styles = StyleSheet.create({
     backgroundColor: "#252525",
   },
   tabPlusButton: {
-    width: 58,
-    height: 58,
+    width: 54,
+    height: 54,
     borderRadius: 999,
     borderWidth: 1,
     borderColor: "#1f6ed3",
@@ -7784,9 +8365,9 @@ const styles = StyleSheet.create({
     marginTop: 0,
     shadowColor: "#0f58ad",
     shadowOpacity: 0.35,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 5 },
-    elevation: 6,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 5,
   },
   tabPlusButtonActive: {
     backgroundColor: "#63afff",
@@ -7795,14 +8376,14 @@ const styles = StyleSheet.create({
   tabPlusText: {
     color: "#04101f",
     fontWeight: "800",
-    fontSize: 34,
-    lineHeight: 34,
-    marginTop: -2,
+    fontSize: 32,
+    lineHeight: 32,
+    marginTop: -1,
   },
   tabText: {
     color: theme.muted,
     fontWeight: "700",
-    fontSize: 11,
+    fontSize: 10,
   },
   tabTextActive: {
     color: theme.text,
