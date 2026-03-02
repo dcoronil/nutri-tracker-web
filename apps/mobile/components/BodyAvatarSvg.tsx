@@ -150,45 +150,45 @@ function paletteByBmiCategory(category: string): TonePalette {
 
   if (normalized.includes("under")) {
     return {
-      accent: "#8ba3c7",
-      contour: "#5a6878",
-      badgeBg: "#121820",
-      badgeBorder: "#3f4b59",
+      accent: "#86A6CF",
+      contour: "#5B7395",
+      badgeBg: "#121721",
+      badgeBorder: "#3A4B65",
     };
   }
 
   if (normalized.includes("normal")) {
     return {
-      accent: "#7bb8ad",
-      contour: "#5f8d86",
-      badgeBg: "#101917",
-      badgeBorder: "#3e5f5a",
+      accent: "#6EE7B7",
+      contour: "#4B9E7D",
+      badgeBg: "#0F1815",
+      badgeBorder: "#36594D",
     };
   }
 
   if (normalized.includes("over")) {
     return {
-      accent: "#ccb086",
-      contour: "#8e744e",
-      badgeBg: "#1b150d",
-      badgeBorder: "#5e4d33",
+      accent: "#D4A24C",
+      contour: "#987037",
+      badgeBg: "#1A140B",
+      badgeBorder: "#5F4722",
     };
   }
 
   if (normalized.includes("obes")) {
     return {
-      accent: "#c89a9a",
-      contour: "#8f6262",
-      badgeBg: "#1d1212",
-      badgeBorder: "#614242",
+      accent: "#D17A7A",
+      contour: "#975656",
+      badgeBg: "#1D1111",
+      badgeBorder: "#663A3A",
     };
   }
 
   return {
-    accent: "#a4a4a4",
-    contour: "#6e6e6e",
-    badgeBg: "#181818",
-    badgeBorder: "#424242",
+    accent: "#B3B5BD",
+    contour: "#767A84",
+    badgeBg: "#18181B",
+    badgeBorder: "#3A3B42",
   };
 }
 
@@ -225,9 +225,9 @@ export const BodyAvatarSvg = memo(function BodyAvatarSvg(props: BodyAvatarSvgPro
         <Svg width="100%" height={440} viewBox={silhouette.viewBox} preserveAspectRatio="xMidYMin meet">
           <Defs>
             <LinearGradient id="avatar_bg" x1="0" y1="0" x2="0" y2="1">
-              <Stop offset="0" stopColor="#151515" />
-              <Stop offset="0.5" stopColor="#0f0f0f" />
-              <Stop offset="1" stopColor="#0a0a0a" />
+              <Stop offset="0" stopColor="#111216" />
+              <Stop offset="0.5" stopColor="#0D0E11" />
+              <Stop offset="1" stopColor="#08090B" />
             </LinearGradient>
             <LinearGradient id="avatar_fill" x1="0" y1="0" x2="1" y2="1">
               <Stop offset="0" stopColor={palette.accent} stopOpacity={0.88} />
@@ -279,9 +279,9 @@ const styles = StyleSheet.create({
   },
   canvasWrap: {
     borderWidth: 1,
-    borderColor: "#2d2d2d",
+    borderColor: "#2C2E34",
     borderRadius: 24,
-    backgroundColor: "#101010",
+    backgroundColor: "#0F1013",
     overflow: "hidden",
     position: "relative",
     paddingHorizontal: 10,
@@ -309,14 +309,14 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
   },
   badgeLabel: {
-    color: "#adadad",
+    color: "#A9ABB3",
     fontSize: 10,
     fontWeight: "700",
     letterSpacing: 0.2,
     textAlign: "right",
   },
   badgeValue: {
-    color: "#f4f4f4",
+    color: "#F4F5F7",
     fontSize: 16,
     fontWeight: "800",
     textAlign: "right",
@@ -335,9 +335,9 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 136,
     borderWidth: 1,
-    borderColor: "#2b2b2b",
+    borderColor: "#2B2D33",
     borderRadius: 14,
-    backgroundColor: "#151515",
+    backgroundColor: "#14161A",
     paddingHorizontal: 11,
     paddingVertical: 10,
     gap: 2,

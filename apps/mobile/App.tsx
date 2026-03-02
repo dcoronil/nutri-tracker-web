@@ -2244,7 +2244,7 @@ function AuthStack() {
         toValue: 1,
         duration: 210,
         easing: Easing.out(Easing.cubic),
-        useNativeDriver: false,
+        useNativeDriver: true,
       }).start(({ finished }) => {
         if (!finished) {
           return;
@@ -3395,8 +3395,7 @@ function BodyProgressScreen() {
   const recentMeasurements = useMemo(() => measurementLogs.slice(0, 4), [measurementLogs]);
 
   return (
-    <SafeAreaView style={styles.screen}>
-      <ScrollView contentContainerStyle={styles.mainScroll}>
+    <ScreenContainer>
         <View style={styles.bodyPageHeader}>
           <View style={styles.bodyPageHeaderCopy}>
             <Text style={styles.bodyPageTitle}>Body</Text>
@@ -3433,7 +3432,7 @@ function BodyProgressScreen() {
           </AppCard>
         ) : null}
 
-        <AppCard>
+        <HeroCard style={styles.bodySummaryHero}>
           <SectionHeader
             title="Resumen actual"
             subtitle="Peso, cambio semanal, IMC y % grasa"
@@ -3472,10 +3471,13 @@ function BodyProgressScreen() {
             <Text style={styles.helperText}>Sugerencia: registra peso al menos una vez por semana.</Text>
           ) : null}
           {summary?.weekly_weight_goal_kg != null ? (
-            <Text style={styles.helperText}>Objetivo semanal configurado: {summary.weekly_weight_goal_kg.toFixed(2)} kg.</Text>
+            <InlineInfoRow label="Objetivo semanal" value={`${summary.weekly_weight_goal_kg.toFixed(2)} kg`} valueColor={theme.kcal} />
+          ) : null}
+          {summary?.needs_weight_checkin ? (
+            <InlineInfoRow label="Check-in recomendado" value="Registrar peso esta semana" valueColor={theme.warning} />
           ) : null}
           <GhostButton title="Recargar datos" onPress={() => void reload()} />
-        </AppCard>
+        </HeroCard>
 
         <AppCard>
           <SectionHeader title="Avatar corporal" subtitle="Silueta corporal por perfil" />
@@ -3649,8 +3651,7 @@ function BodyProgressScreen() {
             ))
           )}
         </AppCard>
-      </ScrollView>
-    </SafeAreaView>
+      </ScreenContainer>
   );
 }
 
@@ -4042,7 +4043,7 @@ function SettingsScreen() {
   const [openSections, setOpenSections] = useState({
     goals: true,
     profile: false,
-    ai: true,
+    ai: false,
     data: false,
     app: false,
   });
@@ -4361,10 +4362,31 @@ function SettingsScreen() {
     }
   };
 
+  const hasGoalsConfigured = Boolean(goalDraft.kcal_goal && goalDraft.protein_goal && goalDraft.fat_goal && goalDraft.carbs_goal);
+  const hasProfileConfigured = Boolean(profileDraft.weight_kg && profileDraft.height_cm);
+  const activeHintsCount = bodyHints.length;
+
   return (
-    <SafeAreaView style={styles.screen}>
-      <ScrollView contentContainerStyle={styles.mainScroll}>
+    <ScreenContainer>
         <AppHeader title="Ajustes" subtitle="Objetivos, perfil corporal, IA y datos" />
+
+        <HeroCard style={styles.settingsHeroCard}>
+          <SectionHeader title="Estado rápido" subtitle="Configuración clave del perfil" />
+          <View style={styles.settingsStatusRow}>
+            <StatusBadge label={hasGoalsConfigured ? "Objetivos listos" : "Faltan objetivos"} tone={hasGoalsConfigured ? "accent" : "warning"} />
+            <StatusBadge
+              label={hasProfileConfigured ? "Perfil completo" : "Perfil pendiente"}
+              tone={hasProfileConfigured ? "accent" : "warning"}
+            />
+            <StatusBadge label={aiKeyStatus?.configured ? "IA activa" : "IA sin clave"} tone={aiKeyStatus?.configured ? "accent" : "default"} />
+          </View>
+          <InlineInfoRow label="Coach hints" value={`${activeHintsCount}`} valueColor={activeHintsCount ? theme.warning : theme.ok} />
+          <InlineInfoRow
+            label="Sugerencia kcal"
+            value={suggestedKcalAdjustment !== null ? `${suggestedKcalAdjustment >= 0 ? "+" : ""}${suggestedKcalAdjustment.toFixed(0)} kcal` : "N/D"}
+            valueColor={suggestedKcalAdjustment !== null ? theme.kcal : undefined}
+          />
+        </HeroCard>
 
         <AppCard>
           <SectionHeader
@@ -4418,10 +4440,12 @@ function SettingsScreen() {
               ) : null}
             </>
           ) : (
-            <Text style={styles.helperText}>
-              {goalDraft.kcal_goal || "-"} kcal · P {goalDraft.protein_goal || "-"} · G {goalDraft.fat_goal || "-"} · C{" "}
-              {goalDraft.carbs_goal || "-"}
-            </Text>
+            <View style={styles.settingsCollapsedSummary}>
+              <InlineInfoRow label="Kcal" value={goalDraft.kcal_goal || "-"} />
+              <InlineInfoRow label="Proteína" value={goalDraft.protein_goal ? `${goalDraft.protein_goal} g` : "-"} />
+              <InlineInfoRow label="Grasas" value={goalDraft.fat_goal ? `${goalDraft.fat_goal} g` : "-"} />
+              <InlineInfoRow label="Carbs" value={goalDraft.carbs_goal ? `${goalDraft.carbs_goal} g` : "-"} />
+            </View>
           )}
         </AppCard>
 
@@ -4512,9 +4536,11 @@ function SettingsScreen() {
               <PrimaryButton title="Guardar perfil" onPress={() => void saveProfile()} loading={savingProfile} />
             </>
           ) : (
-            <Text style={styles.helperText}>
-              {profileDraft.weight_kg || "-"} kg · {profileDraft.height_cm || "-"} cm · {profileDraft.sex}
-            </Text>
+            <View style={styles.settingsCollapsedSummary}>
+              <InlineInfoRow label="Peso" value={profileDraft.weight_kg ? `${profileDraft.weight_kg} kg` : "-"} />
+              <InlineInfoRow label="Altura" value={profileDraft.height_cm ? `${profileDraft.height_cm} cm` : "-"} />
+              <InlineInfoRow label="Sexo" value={profileDraft.sex} />
+            </View>
           )}
         </AppCard>
 
@@ -4554,9 +4580,11 @@ function SettingsScreen() {
               />
             </>
           ) : (
-            <Text style={styles.helperText}>
-              Estado actual: {aiKeyStatus?.configured ? "clave configurada" : "sin clave configurada"}.
-            </Text>
+            <View style={styles.settingsCollapsedSummary}>
+              <InlineInfoRow label="Proveedor" value="OpenAI" />
+              <InlineInfoRow label="Estado" value={aiKeyStatus?.configured ? "Clave configurada" : "Sin clave configurada"} />
+              {aiKeyStatus?.key_hint ? <InlineInfoRow label="Hint" value={aiKeyStatus.key_hint} /> : null}
+            </View>
           )}
         </AppCard>
 
@@ -4627,11 +4655,14 @@ function SettingsScreen() {
               )}
             </>
           ) : (
-            <Text style={styles.helperText}>Exportes y utilidades avanzadas disponibles.</Text>
+            <View style={styles.settingsCollapsedSummary}>
+              <InlineInfoRow label="Export JSON" value="Disponible" />
+              <InlineInfoRow label="Export CSV" value="Disponible" />
+              <InlineInfoRow label="Resumen semanal" value="Compartible" />
+            </View>
           )}
         </AppCard>
-      </ScrollView>
-    </SafeAreaView>
+    </ScreenContainer>
   );
 }
 
@@ -6399,7 +6430,7 @@ function MainAppTabs() {
         toValue: 1,
         duration: 210,
         easing: Easing.out(Easing.cubic),
-        useNativeDriver: false,
+        useNativeDriver: true,
       }).start(({ finished }) => {
         if (!finished) {
           return;
@@ -6624,7 +6655,7 @@ function RootNavigator() {
       toValue: 1,
       duration: 220,
       easing: Easing.out(Easing.cubic),
-      useNativeDriver: false,
+      useNativeDriver: true,
     }).start(({ finished }) => {
       if (!finished) {
         return;
@@ -7090,11 +7121,10 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     paddingHorizontal: 14,
     paddingVertical: 16,
-    backgroundColor: "#101010",
-    borderStyle: "dashed",
-    borderColor: "#2e2e2e",
+    backgroundColor: "#111214",
+    borderColor: "#2a2c30",
     minHeight: 128,
-    gap: 6,
+    gap: 7,
   },
   emptyStateTitle: {
     color: theme.text,
@@ -7472,6 +7502,10 @@ const styles = StyleSheet.create({
   },
   bodyQuickWeightActions: {
     gap: 8,
+  },
+  bodySummaryHero: {
+    backgroundColor: "#0e1014",
+    borderColor: "#2f333b",
   },
   bodySummaryGrid: {
     flexDirection: "row",
@@ -8191,6 +8225,19 @@ const styles = StyleSheet.create({
   settingsInlineActions: {
     gap: 8,
     marginTop: 2,
+  },
+  settingsHeroCard: {
+    gap: 10,
+    backgroundColor: "#0f1115",
+    borderColor: "#2a2f38",
+  },
+  settingsStatusRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  settingsCollapsedSummary: {
+    gap: 3,
   },
   addHubPane: {
     gap: 12,
