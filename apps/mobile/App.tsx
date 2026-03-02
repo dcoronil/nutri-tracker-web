@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import type { ReactElement } from "react";
 import {
   ActivityIndicator,
   Animated,
@@ -544,25 +545,70 @@ const STREAK_FLAME_SVG_XML =
   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 92.27 122.88"><g><path fill="#EC6F59" fill-rule="evenodd" clip-rule="evenodd" d="M18.61,54.89C15.7,28.8,30.94,10.45,59.52,0C42.02,22.71,74.44,47.31,76.23,70.89c4.19-7.15,6.57-16.69,7.04-29.45c21.43,33.62,3.66,88.57-43.5,80.67c-4.33-0.72-8.5-2.09-12.3-4.13C10.27,108.8,0,88.79,0,69.68C0,57.5,5.21,46.63,11.95,37.99C12.85,46.45,14.77,52.76,18.61,54.89L18.61,54.89z"/><path fill="#FAD15C" fill-rule="evenodd" clip-rule="evenodd" d="M33.87,92.58c-4.86-12.55-4.19-32.82,9.42-39.93c0.1,23.3,23.05,26.27,18.8,51.14c3.92-4.44,5.9-11.54,6.25-17.15c6.22,14.24,1.34,25.63-7.53,31.43c-26.97,17.64-50.19-18.12-34.75-37.72C26.53,84.73,31.89,91.49,33.87,92.58L33.87,92.58z"/></g></svg>';
 const theme = {
   bg: "#050505",
-  bgElevated: "#0c0c0c",
-  panel: "#121212",
-  panelSoft: "#181818",
-  panelMuted: "#1f1f1f",
-  border: "#2a2a2a",
-  text: "#f5f5f5",
-  muted: "#a3a3a3",
-  accent: "#ffffff",
-  accentSoft: "#262626",
-  danger: "#f48f8f",
-  warning: "#f1d08e",
-  ok: "#a9d8bb",
-  protein: "#4f8dfd",
+  bgElevated: "#0b0b0c",
+  panel: "#101010",
+  panelSoft: "#171717",
+  panelMuted: "#1d1d1f",
+  border: "#262626",
+  text: "#F5F5F5",
+  muted: "#A1A1AA",
+  accent: "#F5F5F5",
+  accentSoft: "#222225",
+  danger: "#D17A7A",
+  warning: "#D4A24C",
+  ok: "#6EE7B7",
+  info: "#7AA2E3",
+  protein: "#60A5FA",
   carbs: "#f59e0b",
-  fats: "#f472b6",
-  kcal: "#2ed9c3",
-  blue: "#b8b8b8",
-  yellow: "#dcdcdc",
-  red: "#f48f8f",
+  fats: "#EC4899",
+  kcal: "#2DD4BF",
+  fiber: "#86EFAC",
+  water: "#7DD3FC",
+  bmiUnderweight: "#86A6CF",
+  bmiNormal: "#6EE7B7",
+  bmiOverweight: "#D4A24C",
+  bmiObesity: "#D17A7A",
+  blue: "#C3C8D1",
+  yellow: "#E2D3B0",
+  red: "#D9A2A2",
+};
+
+const type = {
+  display: {
+    fontSize: 46,
+    lineHeight: 50,
+    fontWeight: "800" as const,
+    letterSpacing: -0.7,
+  },
+  h1: {
+    fontSize: 32,
+    lineHeight: 36,
+    fontWeight: "800" as const,
+    letterSpacing: -0.4,
+  },
+  h2: {
+    fontSize: 22,
+    lineHeight: 27,
+    fontWeight: "800" as const,
+    letterSpacing: -0.2,
+  },
+  h3: {
+    fontSize: 18,
+    lineHeight: 22,
+    fontWeight: "700" as const,
+    letterSpacing: -0.1,
+  },
+  body: {
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: "500" as const,
+  },
+  caption: {
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: "600" as const,
+    letterSpacing: 0.2,
+  },
 };
 
 const authContext = createContext<AuthContextValue | undefined>(undefined);
@@ -2116,16 +2162,66 @@ function LoginScreen({ onBack }: { onBack: () => void }) {
 
 function AuthStack() {
   const [screen, setScreen] = useState<AuthStackScreen>("welcome");
+  const [visibleScreen, setVisibleScreen] = useState<AuthStackScreen>("welcome");
+  const [incomingScreen, setIncomingScreen] = useState<AuthStackScreen | null>(null);
+  const authScreenTransition = useRef(new Animated.Value(1)).current;
 
-  if (screen === "signup") {
-    return <SignupScreen onBack={() => setScreen("welcome")} />;
-  }
+  const switchAuthScreen = useCallback(
+    (next: AuthStackScreen) => {
+      if (next === screen || next === incomingScreen) {
+        return;
+      }
+      setScreen(next);
+      setIncomingScreen(next);
+      authScreenTransition.stopAnimation();
+      authScreenTransition.setValue(0);
+      Animated.timing(authScreenTransition, {
+        toValue: 1,
+        duration: 210,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: false,
+      }).start(({ finished }) => {
+        if (!finished) {
+          return;
+        }
+        setVisibleScreen(next);
+        setIncomingScreen(null);
+        authScreenTransition.setValue(1);
+      });
+    },
+    [authScreenTransition, incomingScreen, screen],
+  );
 
-  if (screen === "login") {
-    return <LoginScreen onBack={() => setScreen("welcome")} />;
-  }
+  const renderAuthScreen = useCallback(
+    (activeScreen: AuthStackScreen): ReactElement => {
+      if (activeScreen === "signup") {
+        return <SignupScreen onBack={() => switchAuthScreen("welcome")} />;
+      }
+      if (activeScreen === "login") {
+        return <LoginScreen onBack={() => switchAuthScreen("welcome")} />;
+      }
+      return <WelcomeScreen onCreate={() => switchAuthScreen("signup")} onLogin={() => switchAuthScreen("login")} />;
+    },
+    [switchAuthScreen],
+  );
 
-  return <WelcomeScreen onCreate={() => setScreen("signup")} onLogin={() => setScreen("login")} />;
+  const outgoingOpacity = authScreenTransition.interpolate({
+    inputRange: [0, 1],
+    outputRange: [1, 0],
+  });
+
+  return (
+    <View style={styles.crossfadeHost}>
+      <Animated.View style={[styles.crossfadeLayer, incomingScreen ? { opacity: outgoingOpacity } : null]} pointerEvents={incomingScreen ? "none" : "auto"}>
+        {renderAuthScreen(visibleScreen)}
+      </Animated.View>
+      {incomingScreen ? (
+        <Animated.View style={[styles.crossfadeLayer, { opacity: authScreenTransition }]}>
+          {renderAuthScreen(incomingScreen)}
+        </Animated.View>
+      ) : null}
+    </View>
+  );
 }
 
 function VerifyEmailOnlyScreen() {
@@ -3210,16 +3306,16 @@ function BodyProgressScreen() {
   const bmiCategoryColor = (() => {
     const normalized = bmiCategoryLabel.toLowerCase();
     if (normalized.includes("under")) {
-      return "#8ba3c7";
+      return theme.bmiUnderweight;
     }
     if (normalized.includes("normal")) {
-      return "#7bb8ad";
+      return theme.bmiNormal;
     }
     if (normalized.includes("over")) {
-      return "#ccb086";
+      return theme.bmiOverweight;
     }
     if (normalized.includes("obes")) {
-      return "#c89a9a";
+      return theme.bmiObesity;
     }
     return theme.muted;
   })();
@@ -3322,10 +3418,10 @@ function BodyProgressScreen() {
           />
           <View style={styles.bodyLegendRow}>
             {[
-              ["Underweight", "#8ba3c7"],
-              ["Normal", "#7bb8ad"],
-              ["Overweight", "#ccb086"],
-              ["Obesity", "#c89a9a"],
+              ["Underweight", theme.bmiUnderweight],
+              ["Normal", theme.bmiNormal],
+              ["Overweight", theme.bmiOverweight],
+              ["Obesity", theme.bmiObesity],
             ].map(([label, color]) => (
               <View key={label} style={styles.bodyLegendItem}>
                 <View style={[styles.bodyLegendSwatch, { backgroundColor: color }]} />
@@ -6156,10 +6252,13 @@ function QuickAddCard(props: { action: QuickAddAction; title: string; subtitle: 
 
 function MainAppTabs() {
   const [tab, setTab] = useState<MainTab>("dashboard");
+  const [visibleTab, setVisibleTab] = useState<MainTab>("dashboard");
+  const [incomingTab, setIncomingTab] = useState<MainTab | null>(null);
   const [quickAddOpen, setQuickAddOpen] = useState(false);
   const [quickAddVisible, setQuickAddVisible] = useState(false);
   const [launchAction, setLaunchAction] = useState<AddLaunchAction | null>(null);
   const quickAddAnim = useRef(new Animated.Value(0)).current;
+  const tabTransition = useRef(new Animated.Value(1)).current;
 
   const tabs: Array<{ value: MainTab; label: string; center?: boolean }> = [
     { value: "dashboard", label: "Panel" },
@@ -6210,25 +6309,51 @@ function MainAppTabs() {
 
   const runQuickAction = (action: QuickAddAction) => {
     closeQuickAdd(() => {
-      setTab("add");
       setLaunchAction({
         requestId: Date.now(),
         action,
       });
+      switchTab("add");
     });
   };
+
+  const switchTab = useCallback(
+    (nextTab: MainTab) => {
+      if ((nextTab === tab && !incomingTab) || nextTab === incomingTab) {
+        return;
+      }
+      setTab(nextTab);
+      setIncomingTab(nextTab);
+      tabTransition.stopAnimation();
+      tabTransition.setValue(0);
+      Animated.timing(tabTransition, {
+        toValue: 1,
+        duration: 210,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: false,
+      }).start(({ finished }) => {
+        if (!finished) {
+          return;
+        }
+        setVisibleTab(nextTab);
+        setIncomingTab(null);
+        tabTransition.setValue(1);
+      });
+    },
+    [incomingTab, tab, tabTransition],
+  );
 
   const launchActionFromPanel = useCallback(
     (action: QuickAddAction) => {
       closeQuickAdd(() => {
-        setTab("add");
         setLaunchAction({
           requestId: Date.now(),
           action,
         });
+        switchTab("add");
       });
     },
-    [closeQuickAdd],
+    [closeQuickAdd, switchTab],
   );
 
   const toggleQuickAdd = useCallback(() => {
@@ -6256,13 +6381,13 @@ function MainAppTabs() {
     outputRange: ["0deg", "45deg"],
   });
 
-  return (
-    <SafeAreaView style={styles.screen}>
-      <View style={styles.flex1}>
-        {tab === "dashboard" ? (
-          <DashboardScreen onOpenBodyProgress={() => setTab("body")} onQuickAddAction={launchActionFromPanel} />
-        ) : null}
-        {tab === "add" ? (
+  const renderTabScene = useCallback(
+    (activeTab: MainTab): ReactElement | null => {
+      if (activeTab === "dashboard") {
+        return <DashboardScreen onOpenBodyProgress={() => switchTab("body")} onQuickAddAction={launchActionFromPanel} />;
+      }
+      if (activeTab === "add") {
+        return (
           <AddScreen
             launchAction={launchAction}
             onLaunchActionHandled={(requestId) => {
@@ -6274,10 +6399,36 @@ function MainAppTabs() {
               });
             }}
           />
+        );
+      }
+      if (activeTab === "body") {
+        return <BodyProgressScreen />;
+      }
+      if (activeTab === "history") {
+        return <HistoryScreen />;
+      }
+      if (activeTab === "settings") {
+        return <SettingsScreen />;
+      }
+      return null;
+    },
+    [launchAction, launchActionFromPanel, switchTab],
+  );
+
+  const outgoingOpacity = tabTransition.interpolate({
+    inputRange: [0, 1],
+    outputRange: [1, 0],
+  });
+
+  return (
+    <SafeAreaView style={styles.screen}>
+      <View style={styles.crossfadeHost}>
+        <Animated.View style={[styles.crossfadeLayer, incomingTab ? { opacity: outgoingOpacity } : null]} pointerEvents={incomingTab ? "none" : "auto"}>
+          {renderTabScene(visibleTab)}
+        </Animated.View>
+        {incomingTab ? (
+          <Animated.View style={[styles.crossfadeLayer, { opacity: tabTransition }]}>{renderTabScene(incomingTab)}</Animated.View>
         ) : null}
-        {tab === "body" ? <BodyProgressScreen /> : null}
-        {tab === "history" ? <HistoryScreen /> : null}
-        {tab === "settings" ? <SettingsScreen /> : null}
       </View>
 
       <View style={styles.tabBar}>
@@ -6292,7 +6443,7 @@ function MainAppTabs() {
                   toggleQuickAdd();
                   return;
                 }
-                closeQuickAdd(() => setTab(value));
+                closeQuickAdd(() => switchTab(value));
               }}
               style={({ pressed }) => [
                 styles.tabItem,
@@ -6372,24 +6523,83 @@ function MainAppTabs() {
 
 function RootNavigator() {
   const auth = useAuth();
+  const rootTransition = useRef(new Animated.Value(1)).current;
 
-  if (auth.loading) {
-    return <LoadingGate />;
-  }
+  const targetRoute = useMemo(() => {
+    if (auth.loading) {
+      return "loading" as const;
+    }
+    if (!auth.user && !auth.pendingVerificationEmail) {
+      return "auth" as const;
+    }
+    if ((auth.user && !auth.user.email_verified) || auth.pendingVerificationEmail) {
+      return "verify" as const;
+    }
+    if (auth.user && auth.user.email_verified && !auth.user.onboarding_completed) {
+      return "onboarding" as const;
+    }
+    return "main" as const;
+  }, [auth.loading, auth.pendingVerificationEmail, auth.user]);
 
-  if (!auth.user && !auth.pendingVerificationEmail) {
-    return <AuthStack />;
-  }
+  const [visibleRoute, setVisibleRoute] = useState(targetRoute);
+  const [incomingRoute, setIncomingRoute] = useState<typeof targetRoute | null>(null);
 
-  if ((auth.user && !auth.user.email_verified) || auth.pendingVerificationEmail) {
-    return <VerifyEmailOnlyScreen />;
-  }
+  useEffect(() => {
+    if ((targetRoute === visibleRoute && !incomingRoute) || targetRoute === incomingRoute) {
+      return;
+    }
+    setIncomingRoute(targetRoute);
+    rootTransition.stopAnimation();
+    rootTransition.setValue(0);
+    Animated.timing(rootTransition, {
+      toValue: 1,
+      duration: 220,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    }).start(({ finished }) => {
+      if (!finished) {
+        return;
+      }
+      setVisibleRoute(targetRoute);
+      setIncomingRoute(null);
+      rootTransition.setValue(1);
+    });
+  }, [incomingRoute, rootTransition, targetRoute, visibleRoute]);
 
-  if (auth.user && auth.user.email_verified && !auth.user.onboarding_completed) {
-    return <OnboardingWizard />;
-  }
+  const renderRootRoute = useCallback(
+    (route: typeof targetRoute): ReactElement => {
+      if (route === "loading") {
+        return <LoadingGate />;
+      }
+      if (route === "auth") {
+        return <AuthStack />;
+      }
+      if (route === "verify") {
+        return <VerifyEmailOnlyScreen />;
+      }
+      if (route === "onboarding") {
+        return <OnboardingWizard />;
+      }
+      return <MainAppTabs />;
+    },
+    [],
+  );
 
-  return <MainAppTabs />;
+  const outgoingOpacity = rootTransition.interpolate({
+    inputRange: [0, 1],
+    outputRange: [1, 0],
+  });
+
+  return (
+    <View style={styles.crossfadeHost}>
+      <Animated.View style={[styles.crossfadeLayer, incomingRoute ? { opacity: outgoingOpacity } : null]} pointerEvents={incomingRoute ? "none" : "auto"}>
+        {renderRootRoute(visibleRoute)}
+      </Animated.View>
+      {incomingRoute ? (
+        <Animated.View style={[styles.crossfadeLayer, { opacity: rootTransition }]}>{renderRootRoute(incomingRoute)}</Animated.View>
+      ) : null}
+    </View>
+  );
 }
 
 export default function App() {
@@ -6403,6 +6613,15 @@ export default function App() {
 
 const styles = StyleSheet.create({
   flex1: { flex: 1 },
+  crossfadeHost: {
+    flex: 1,
+    position: "relative",
+    backgroundColor: theme.bg,
+  },
+  crossfadeLayer: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: theme.bg,
+  },
   screen: {
     flex: 1,
     backgroundColor: theme.bg,
@@ -6419,14 +6638,11 @@ const styles = StyleSheet.create({
   },
   headerTitle: {
     color: theme.text,
-    fontSize: 31,
-    fontWeight: "800",
-    letterSpacing: 0.1,
+    ...type.h1,
   },
   headerSubtitle: {
     color: theme.muted,
-    fontSize: 13,
-    lineHeight: 20,
+    ...type.body,
   },
   authScroll: {
     padding: 20,
@@ -6448,14 +6664,11 @@ const styles = StyleSheet.create({
   },
   brandTitle: {
     color: theme.text,
-    fontSize: 30,
-    fontWeight: "800",
-    lineHeight: 34,
+    ...type.h1,
   },
   brandText: {
     color: theme.muted,
-    fontSize: 15,
-    lineHeight: 22,
+    ...type.body,
   },
   fieldWrap: {
     gap: 7,
@@ -6540,8 +6753,7 @@ const styles = StyleSheet.create({
   },
   helperText: {
     color: theme.muted,
-    fontSize: 13,
-    lineHeight: 20,
+    ...type.body,
   },
   passwordStrengthWrap: {
     marginTop: -4,
@@ -6620,14 +6832,11 @@ const styles = StyleSheet.create({
   },
   sectionHeaderTitle: {
     color: theme.text,
-    fontSize: 18,
-    fontWeight: "800",
-    letterSpacing: -0.1,
+    ...type.h3,
   },
   sectionHeaderSubtitle: {
     color: theme.muted,
-    fontSize: 12,
-    lineHeight: 17,
+    ...type.caption,
   },
   sectionHeaderAction: {
     borderWidth: 0,
@@ -6916,13 +7125,11 @@ const styles = StyleSheet.create({
   },
   dashboardGreeting: {
     color: theme.text,
-    fontSize: 24,
-    fontWeight: "800",
-    letterSpacing: 0.2,
+    ...type.h2,
   },
   dashboardDate: {
     color: theme.muted,
-    fontSize: 13,
+    ...type.caption,
     marginTop: 2,
   },
   quickWeightBtn: {
@@ -6949,13 +7156,11 @@ const styles = StyleSheet.create({
   },
   heroRemainingValue: {
     color: theme.text,
-    fontSize: 48,
-    fontWeight: "800",
-    lineHeight: 52,
+    ...type.display,
   },
   heroRemainingSub: {
     color: theme.muted,
-    fontSize: 13,
+    ...type.body,
   },
   heroProgressTrack: {
     height: 12,
@@ -7084,13 +7289,11 @@ const styles = StyleSheet.create({
   },
   bodyPageTitle: {
     color: theme.text,
-    fontSize: 28,
-    fontWeight: "800",
-    letterSpacing: -0.3,
+    ...type.h1,
   },
   bodyPageSubtitle: {
     color: theme.muted,
-    fontSize: 13,
+    ...type.body,
   },
   bodyHeaderActionBtn: {
     borderWidth: 1,
@@ -7184,7 +7387,7 @@ const styles = StyleSheet.create({
   },
   metricTileValue: {
     color: theme.text,
-    fontSize: 16,
+    fontSize: 17,
     fontWeight: "800",
   },
   metricTileSubtitle: {
@@ -7554,14 +7757,11 @@ const styles = StyleSheet.create({
   },
   historyCalendarTitle: {
     color: theme.text,
-    fontSize: 20,
-    fontWeight: "800",
-    letterSpacing: -0.3,
+    ...type.h2,
   },
   historyCalendarSubtitle: {
     color: "#95959d",
-    fontSize: 12,
-    lineHeight: 17,
+    ...type.caption,
   },
   historyCalendarReloadBtn: {
     paddingHorizontal: 6,
