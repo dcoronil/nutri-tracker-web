@@ -3379,8 +3379,12 @@ function HistoryScreen() {
               <View style={styles.historyCalendarStreakTextWrap}>
                 <Text style={styles.historyCalendarStreakTitle}>{streakDays > 0 ? "Racha activa" : "Racha inactiva"}</Text>
                 <Text style={styles.historyCalendarStreakSubtitle}>
-                  {streakDays > 0 ? `${streakDays} día${streakDays === 1 ? "" : "s"} seguidos` : "Registra comida hoy para activarla"}
+                  {streakDays > 0 ? "Consistencia semanal en curso" : "Registra comida hoy para activarla"}
                 </Text>
+              </View>
+              <View style={styles.historyCalendarStreakMetric}>
+                <Text style={styles.historyCalendarStreakDays}>{streakDays}</Text>
+                <Text style={styles.historyCalendarStreakDaysLabel}>día{streakDays === 1 ? "" : "s"}</Text>
               </View>
             </View>
           ) : null}
@@ -7025,7 +7029,7 @@ const styles = StyleSheet.create({
     gap: 10,
     borderRadius: 999,
     paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingVertical: 7,
   },
   historyCalendarStreakBadgeActive: {
     backgroundColor: "rgba(255,255,255,0.08)",
@@ -7039,17 +7043,34 @@ const styles = StyleSheet.create({
   },
   historyCalendarStreakTextWrap: {
     flex: 1,
-    gap: 1,
+    gap: 0,
   },
   historyCalendarStreakTitle: {
     color: theme.text,
     fontSize: 12,
-    fontWeight: "700",
+    fontWeight: "800",
   },
   historyCalendarStreakSubtitle: {
-    color: theme.muted,
-    fontSize: 11,
+    color: "#9a9aa2",
+    fontSize: 10,
     fontWeight: "600",
+  },
+  historyCalendarStreakMetric: {
+    minWidth: 56,
+    alignItems: "flex-end",
+    justifyContent: "center",
+    gap: 0,
+  },
+  historyCalendarStreakDays: {
+    color: theme.text,
+    fontSize: 18,
+    fontWeight: "800",
+    lineHeight: 20,
+  },
+  historyCalendarStreakDaysLabel: {
+    color: "#a5a5ae",
+    fontSize: 10,
+    fontWeight: "700",
   },
   historyWeekDaysRow: {
     flexDirection: "row",
