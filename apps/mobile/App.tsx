@@ -6294,7 +6294,12 @@ function MainAppTabs() {
                 }
                 closeQuickAdd(() => setTab(value));
               }}
-              style={[styles.tabItem, isCenter && styles.tabItemCenter, active && !isCenter && styles.tabItemActive]}
+              style={({ pressed }) => [
+                styles.tabItem,
+                isCenter && styles.tabItemCenter,
+                active && !isCenter && styles.tabItemActive,
+                pressed && styles.tabItemPressed,
+              ]}
             >
               {isCenter ? (
                 <View style={[styles.tabPlusButton, quickAddOpen && styles.tabPlusButtonActive]}>
@@ -8352,6 +8357,9 @@ const styles = StyleSheet.create({
   },
   tabItemActive: {
     backgroundColor: "#252525",
+  },
+  tabItemPressed: {
+    opacity: 0.86,
   },
   tabPlusButton: {
     width: 54,
