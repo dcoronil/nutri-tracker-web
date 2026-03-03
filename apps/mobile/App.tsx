@@ -2487,6 +2487,9 @@ function DashboardScreen({
   const [macroViewMode, setMacroViewMode] = useState<"rings" | "bars">("rings");
   const [summary, setSummary] = useState<DaySummary | null>(null);
   const [loadingSummary, setLoadingSummary] = useState(true);
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const [accountMenuVisible, setAccountMenuVisible] = useState(false);
+  const accountMenuAnim = useRef(new Animated.Value(0)).current;
 
   const loadSummary = useCallback(async () => {
     setLoadingSummary(true);
@@ -2503,6 +2506,53 @@ function DashboardScreen({
   useEffect(() => {
     void loadSummary();
   }, [loadSummary]);
+
+  const openAccountMenu = useCallback(() => {
+    if (accountMenuOpen) {
+      return;
+    }
+    setAccountMenuVisible(true);
+    setAccountMenuOpen(true);
+    accountMenuAnim.stopAnimation();
+    Animated.spring(accountMenuAnim, {
+      toValue: 1,
+      damping: 22,
+      stiffness: 240,
+      mass: 0.95,
+      useNativeDriver: true,
+    }).start();
+  }, [accountMenuAnim, accountMenuOpen]);
+
+  const closeAccountMenu = useCallback(
+    (onClosed?: () => void) => {
+      if (!accountMenuVisible) {
+        onClosed?.();
+        return;
+      }
+      setAccountMenuOpen(false);
+      accountMenuAnim.stopAnimation();
+      Animated.timing(accountMenuAnim, {
+        toValue: 0,
+        duration: 220,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }).start(({ finished }) => {
+        if (finished) {
+          setAccountMenuVisible(false);
+        }
+        onClosed?.();
+      });
+    },
+    [accountMenuAnim, accountMenuVisible],
+  );
+
+  const toggleAccountMenu = useCallback(() => {
+    if (accountMenuOpen) {
+      closeAccountMenu();
+      return;
+    }
+    openAccountMenu();
+  }, [accountMenuOpen, closeAccountMenu, openAccountMenu]);
 
   const now = useMemo(() => new Date(), []);
   const hour = now.getHours();
@@ -2546,6 +2596,18 @@ function DashboardScreen({
     { label: "Carbs", value: summary?.consumed.carbs_g ?? 0, color: theme.carbs },
     { label: "Grasas", value: summary?.consumed.fat_g ?? 0, color: theme.fats },
   ];
+  const accountMenuTranslateY = accountMenuAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [-14, 0],
+  });
+  const accountMenuScale = accountMenuAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.96, 1],
+  });
+  const accountMenuBackdropOpacity = accountMenuAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, 1],
+  });
 
   const confirmDeleteIntake = (intakeId: number) => {
     Alert.alert("Eliminar consumo", "Este registro se borrará del día actual.", [
@@ -2568,8 +2630,9 @@ function DashboardScreen({
   };
 
   return (
-    <SafeAreaView style={styles.screen}>
-      <ScrollView contentContainerStyle={styles.mainScroll}>
+    <>
+      <SafeAreaView style={styles.screen}>
+        <ScrollView contentContainerStyle={styles.mainScroll}>
         <View style={styles.dashboardHeaderRow}>
           <View style={styles.dashboardHeaderLeft}>
             <Text style={styles.dashboardGreeting}>
@@ -2580,7 +2643,12 @@ function DashboardScreen({
           <Pressable style={styles.quickWeightBtn} onPress={onOpenBodyProgress}>
             <Text style={styles.quickWeightBtnText}>+</Text>
           </Pressable>
-          <AvatarCircle letter={displayName.slice(0, 1)} />
+          <Pressable
+            onPress={toggleAccountMenu}
+            style={({ pressed }) => [styles.avatarPressable, pressed && styles.avatarPressablePressed]}
+          >
+            <AvatarCircle letter={displayName.slice(0, 1)} />
+          </Pressable>
         </View>
 
         <AppCard style={[styles.heroCard, exceededKcal && styles.heroCardExceeded]}>
@@ -2752,8 +2820,40 @@ function DashboardScreen({
             </View>
           ))}
         </AppCard>
-      </ScrollView>
-    </SafeAreaView>
+        </ScrollView>
+      </SafeAreaView>
+      {accountMenuVisible ? (
+        <View style={styles.accountMenuLayer} pointerEvents="box-none">
+          <Pressable style={styles.accountMenuBackdrop} onPress={() => closeAccountMenu()}>
+            <Animated.View style={[styles.accountMenuScrim, { opacity: accountMenuBackdropOpacity }]} />
+          </Pressable>
+          <Animated.View
+            style={[
+              styles.accountMenuContainer,
+              {
+                opacity: accountMenuAnim,
+                transform: [{ translateY: accountMenuTranslateY }, { scale: accountMenuScale }],
+              },
+            ]}
+          >
+            <Pressable style={styles.accountMenuCard} onPress={() => {}}>
+              <Text style={styles.accountMenuTitle}>Mi cuenta</Text>
+              <StatRow label="Email" value={auth.user?.email ?? "-"} />
+              <StatRow label="Email verificado" value={auth.user?.email_verified ? "Sí" : "No"} />
+              <StatRow label="Onboarding" value={auth.user?.onboarding_completed ? "Completado" : "Pendiente"} />
+              <SecondaryButton
+                title="Cerrar sesión"
+                onPress={() =>
+                  closeAccountMenu(() => {
+                    void auth.logout();
+                  })
+                }
+              />
+            </Pressable>
+          </Animated.View>
+        </View>
+      ) : null}
+    </>
   );
 }
 
@@ -6352,10 +6452,48 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  avatarPressable: {
+    borderRadius: 999,
+  },
+  avatarPressablePressed: {
+    opacity: 0.85,
+    transform: [{ scale: 0.97 }],
+  },
   avatarText: {
     color: theme.text,
     fontWeight: "800",
     fontSize: 15,
+  },
+  accountMenuLayer: {
+    ...StyleSheet.absoluteFillObject,
+    paddingHorizontal: 16,
+    paddingTop: 68,
+    alignItems: "flex-end",
+  },
+  accountMenuBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  accountMenuScrim: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.44)",
+  },
+  accountMenuContainer: {
+    width: "86%",
+    maxWidth: 340,
+  },
+  accountMenuCard: {
+    borderWidth: 1,
+    borderColor: theme.border,
+    borderRadius: 18,
+    backgroundColor: "#15181f",
+    padding: 14,
+    gap: 10,
+  },
+  accountMenuTitle: {
+    color: theme.text,
+    fontSize: 15,
+    fontWeight: "800",
+    letterSpacing: 0.2,
   },
   emptyStateCard: {
     alignItems: "center",
