@@ -2,37 +2,16 @@
   "expo": {
     "name": "Nutri Tracker",
     "slug": "nutri-tracker",
-    "scheme": "nutritracker",
     "version": "0.1.0",
     "orientation": "portrait",
     "platforms": [
       "ios",
       "android"
     ],
-    "ios": {
-      "bundleIdentifier": "com.danicoronil.nutritracker",
-      "supportsTablet": false,
-      "infoPlist": {
-        "NSPhotoLibraryAddUsageDescription": "Nutri Tracker puede guardar imágenes de apoyo cuando sea necesario."
-      }
-    },
     "userInterfaceStyle": "dark",
     "plugins": [
       "expo-asset",
-      [
-        "expo-camera",
-        {
-          "cameraPermission": "Nutri Tracker necesita acceso a la cámara para escanear códigos de barras y capturar etiquetas/comidas."
-        }
-      ],
-      [
-        "expo-image-picker",
-        {
-          "photosPermission": "Nutri Tracker necesita acceso a tu biblioteca para importar fotos de etiqueta y comidas.",
-          "cameraPermission": "Nutri Tracker necesita acceso a la cámara para capturar fotos."
-        }
-      ],
-      "expo-dev-client"
+      "@react-native-community/datetimepicker"
     ]
   }
 }

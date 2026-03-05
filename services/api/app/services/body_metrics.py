@@ -141,6 +141,36 @@ def recommended_goals(profile: UserProfile) -> dict[str, float]:
     }
 
 
+def recommended_weekly_weight_change(goal_type: GoalType) -> float:
+    if goal_type == GoalType.lose:
+        return -0.35
+    if goal_type == GoalType.gain:
+        return 0.25
+    return 0.0
+
+
+def suggested_kcal_adjustment(
+    *,
+    weekly_weight_delta: float | None,
+    goal_type: GoalType,
+    max_abs_adjustment: float = 350.0,
+) -> float | None:
+    if weekly_weight_delta is None:
+        return None
+
+    target_delta = recommended_weekly_weight_change(goal_type)
+    delta_error = weekly_weight_delta - target_delta
+
+    # Avoid noisy micro-adjustments around target.
+    if abs(delta_error) < 0.08:
+        return 0.0
+
+    # ~1100 kcal/day per 1kg/week difference.
+    adjustment = -delta_error * 1100.0
+    adjustment = max(-max_abs_adjustment, min(max_abs_adjustment, adjustment))
+    return round(adjustment, 1)
+
+
 def goal_feedback(profile: UserProfile, goal: dict[str, float], recommended: dict[str, float]) -> dict[str, object]:
     notes: list[str] = []
 
@@ -235,6 +265,8 @@ def coach_hints(
     current_time: datetime | None = None,
     weekly_weight_delta: float | None = None,
     latest_weight_kg: float | None = None,
+    goal_type: GoalType | None = None,
+    weekly_weight_goal_kg: float | None = None,
 ) -> list[str]:
     notes: list[str] = []
 
@@ -252,5 +284,19 @@ def coach_hints(
         weekly_percent = abs(weekly_weight_delta) / latest_weight_kg
         if weekly_weight_delta < 0 and weekly_percent > 0.01:
             notes.append("Tu peso baja >1% por semana. Considera subir kcal ligeramente.")
+
+    if goal_type is not None and weekly_weight_delta is not None:
+        expected_delta = recommended_weekly_weight_change(goal_type)
+        if goal_type == GoalType.maintain and abs(weekly_weight_delta) > 0.25:
+            notes.append("Tu peso se mueve más de lo esperado para mantenimiento.")
+        elif goal_type == GoalType.lose and weekly_weight_delta > -0.1:
+            notes.append("Pérdida de peso lenta. Revisa adherencia o reduce kcal ligeramente.")
+        elif goal_type == GoalType.gain and weekly_weight_delta < 0.05:
+            notes.append("Ganancia de peso lenta. Podrías subir kcal ligeramente.")
+        elif abs(weekly_weight_delta - expected_delta) <= 0.1:
+            notes.append("Tu tendencia de peso va en línea con el objetivo.")
+
+    if weekly_weight_goal_kg is not None:
+        notes.append(f"Objetivo semanal configurado: {weekly_weight_goal_kg:.2f} kg.")
 
     return notes

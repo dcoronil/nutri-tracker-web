@@ -6,6 +6,7 @@ import secrets
 from typing import Literal
 
 import httpx
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from app.config import get_settings
 
@@ -38,32 +39,16 @@ def _derive_key(secret: str) -> bytes:
     return hashlib.sha256(secret.encode("utf-8")).digest()
 
 
-def encrypt_api_key(raw_key: str) -> str:
-    settings = get_settings()
-    secret = settings.ai_key_encryption_secret.strip() or settings.auth_secret_key
-
-    key_bytes = _derive_key(secret)
-    nonce = secrets.token_bytes(16)
+def _legacy_encrypt(raw_key: str, key_bytes: bytes, nonce: bytes) -> str:
     payload = raw_key.encode("utf-8")
     encrypted = bytes(
         byte ^ key_bytes[idx % len(key_bytes)] ^ nonce[idx % len(nonce)] for idx, byte in enumerate(payload)
     )
-
     token = base64.urlsafe_b64encode(nonce + encrypted).decode("ascii")
     return f"v1:{token}"
 
 
-def decrypt_api_key(encrypted_key: str) -> str:
-    settings = get_settings()
-    secret = settings.ai_key_encryption_secret.strip() or settings.auth_secret_key
-
-    if not encrypted_key or ":" not in encrypted_key:
-        raise AIKeyValidationError("Invalid encrypted key format")
-
-    version, _, token = encrypted_key.partition(":")
-    if version != "v1":
-        raise AIKeyValidationError("Unsupported encrypted key format")
-
+def _legacy_decrypt(token: str, key_bytes: bytes) -> str:
     try:
         decoded = base64.urlsafe_b64decode(token.encode("ascii"))
     except Exception as exc:  # pragma: no cover - invalid external value
@@ -74,10 +59,57 @@ def decrypt_api_key(encrypted_key: str) -> str:
 
     nonce = decoded[:16]
     ciphertext = decoded[16:]
-    key_bytes = _derive_key(secret)
     plain = bytes(
         byte ^ key_bytes[idx % len(key_bytes)] ^ nonce[idx % len(nonce)] for idx, byte in enumerate(ciphertext)
     )
+    try:
+        return plain.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise AIKeyValidationError("Encrypted key could not be decoded") from exc
+
+
+def encrypt_api_key(raw_key: str) -> str:
+    settings = get_settings()
+    secret = settings.ai_key_encryption_secret.strip() or settings.auth_secret_key
+
+    key_bytes = _derive_key(secret)
+    nonce = secrets.token_bytes(12)
+    aes = AESGCM(key_bytes)
+    ciphertext = aes.encrypt(nonce, raw_key.encode("utf-8"), None)
+    token = base64.urlsafe_b64encode(nonce + ciphertext).decode("ascii")
+    return f"v2:{token}"
+
+
+def decrypt_api_key(encrypted_key: str) -> str:
+    settings = get_settings()
+    secret = settings.ai_key_encryption_secret.strip() or settings.auth_secret_key
+
+    if not encrypted_key or ":" not in encrypted_key:
+        raise AIKeyValidationError("Invalid encrypted key format")
+
+    version, _, token = encrypted_key.partition(":")
+    key_bytes = _derive_key(secret)
+    if version == "v1":
+        return _legacy_decrypt(token, key_bytes)
+
+    if version != "v2":
+        raise AIKeyValidationError("Unsupported encrypted key format")
+
+    try:
+        decoded = base64.urlsafe_b64decode(token.encode("ascii"))
+    except Exception as exc:  # pragma: no cover - invalid external value
+        raise AIKeyValidationError("Invalid encrypted key payload") from exc
+
+    if len(decoded) < 13:
+        raise AIKeyValidationError("Invalid encrypted key payload")
+
+    nonce = decoded[:12]
+    ciphertext = decoded[12:]
+    aes = AESGCM(key_bytes)
+    try:
+        plain = aes.decrypt(nonce, ciphertext, None)
+    except Exception as exc:  # pragma: no cover - invalid external value
+        raise AIKeyValidationError("Encrypted key could not be decrypted") from exc
 
     try:
         return plain.decode("utf-8")

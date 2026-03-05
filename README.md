@@ -39,6 +39,16 @@ Variables importantes:
 - `EXPOSE_VERIFICATION_CODE=true` (dev)
 - `EXPO_PUBLIC_API_BASE_URL` (para móvil físico usa IP local, no localhost)
 
+SMTP real (si quieres recibir correos de verificación):
+
+- `SMTP_HOST` (ej. `smtp.gmail.com` o el SMTP de tu proveedor)
+- `SMTP_PORT` (`587` con TLS o `465` con SSL)
+- `SMTP_USER`
+- `SMTP_PASSWORD`
+- `SMTP_FROM_EMAIL`
+- `SMTP_USE_TLS=true` para puerto `587`
+- `SMTP_USE_SSL=true` para puerto `465` (y `SMTP_USE_TLS=false`)
+
 ## Arranque rápido
 
 ```bash
@@ -73,6 +83,7 @@ EXPO_PUBLIC_API_BASE_URL=http://TU_IP_LOCAL:8000
 3. Crea cuenta.
 4. Usa OTP de email.
    - Si no hay SMTP y `DEV_EMAIL_MODE=true`, el código queda en logs del backend.
+   - Si SMTP falla y `DEV_EMAIL_MODE=true`, también se imprime un OTP fallback en logs.
 5. Completa onboarding.
 6. En `Scan`, escanea barcode dentro del rectángulo.
 7. Si no existe producto, captura etiqueta y crea producto.

@@ -8,8 +8,11 @@ def test_auth_state_transitions_and_onboarding_completion(client):
     register_response = client.post(
         "/auth/register",
         json={
+            "username": f"profile_{uuid4().hex[:8]}",
             "email": email,
             "password": "supersecret123",
+            "sex": "male",
+            "birth_date": "1994-05-09",
         },
     )
     assert register_response.status_code == 200
@@ -17,23 +20,15 @@ def test_auth_state_transitions_and_onboarding_completion(client):
 
     assert register_body["email_verified"] is False
     assert register_body["onboarding_completed"] is False
+    assert register_body["username"].startswith("profile_")
     assert register_body["debug_verification_code"] is not None
 
     login_response = client.post(
         "/auth/login",
         json={"email": email, "password": "supersecret123"},
     )
-    assert login_response.status_code == 200
-    login_body = login_response.json()
-    assert login_body["user"]["email_verified"] is False
-    assert login_body["user"]["onboarding_completed"] is False
-
-    token = login_body["access_token"]
-    headers = {"Authorization": f"Bearer {token}"}
-
-    me_before_verify = client.get("/me", headers=headers)
-    assert me_before_verify.status_code == 200
-    assert me_before_verify.json()["user"]["email_verified"] is False
+    assert login_response.status_code == 403
+    assert "pending verification" in login_response.json()["detail"].lower()
 
     verify_response = client.post(
         "/auth/verify",
@@ -43,8 +38,15 @@ def test_auth_state_transitions_and_onboarding_completion(client):
     verify_body = verify_response.json()
     assert verify_body["user"]["email_verified"] is True
     assert verify_body["user"]["onboarding_completed"] is False
+    assert verify_body["user"]["username"].startswith("profile_")
 
     verified_headers = {"Authorization": f"Bearer {verify_body['access_token']}"}
+
+    login_after_verify = client.post(
+        "/auth/login",
+        json={"email": email, "password": "supersecret123"},
+    )
+    assert login_after_verify.status_code == 200
 
     profile_response = client.post(
         "/profile",
@@ -84,3 +86,34 @@ def test_auth_state_transitions_and_onboarding_completion(client):
     me_after_goal = client.get("/me", headers=verified_headers)
     assert me_after_goal.status_code == 200
     assert me_after_goal.json()["user"]["onboarding_completed"] is True
+
+
+def test_username_availability_endpoint_flags_taken_username(client):
+    email = f"user-check-{uuid4().hex[:8]}@example.com"
+    username = f"usercheck_{uuid4().hex[:6]}"
+    register_response = client.post(
+        "/auth/register",
+        json={
+            "username": username,
+            "email": email,
+            "password": "supersecret123",
+            "sex": "male",
+            "birth_date": "1994-02-01",
+        },
+    )
+    assert register_response.status_code == 200
+
+    availability = client.get("/auth/check-username", params={"username": username})
+    assert availability.status_code == 200
+    payload = availability.json()
+    assert payload["available"] is False
+    assert "uso" in payload["reason"].lower() or "reservado" in payload["reason"].lower()
+
+
+def test_username_availability_endpoint_accepts_free_username(client):
+    candidate = f"freeuser_{uuid4().hex[:6]}"
+    availability = client.get("/auth/check-username", params={"username": candidate})
+    assert availability.status_code == 200
+    payload = availability.json()
+    assert payload["username"] == candidate
+    assert payload["available"] is True

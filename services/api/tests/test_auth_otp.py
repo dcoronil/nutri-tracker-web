@@ -5,7 +5,13 @@ def test_verify_otp_ok(client):
     email = f"otp-ok-{uuid4().hex[:8]}@example.com"
     register_response = client.post(
         "/auth/register",
-        json={"email": email, "password": "supersecret123"},
+        json={
+            "username": f"otp_ok_{uuid4().hex[:6]}",
+            "email": email,
+            "password": "supersecret123",
+            "sex": "male",
+            "birth_date": "1992-02-14",
+        },
     )
     assert register_response.status_code == 200
     code = register_response.json()["debug_verification_code"]
@@ -23,7 +29,13 @@ def test_verify_otp_fail_wrong_code(client):
     email = f"otp-fail-{uuid4().hex[:8]}@example.com"
     register_response = client.post(
         "/auth/register",
-        json={"email": email, "password": "supersecret123"},
+        json={
+            "username": f"otp_fail_{uuid4().hex[:6]}",
+            "email": email,
+            "password": "supersecret123",
+            "sex": "female",
+            "birth_date": "1996-11-03",
+        },
     )
     assert register_response.status_code == 200
 

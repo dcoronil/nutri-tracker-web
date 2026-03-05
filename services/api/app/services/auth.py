@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.config import get_settings
+from app.services.password_policy import validate_password_policy
 
 EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 
@@ -32,8 +33,7 @@ def _b64url_decode(value: str) -> bytes:
 
 
 def hash_password(password: str) -> str:
-    if len(password) < 8:
-        raise ValueError("La contraseña debe tener al menos 8 caracteres")
+    validate_password_policy(password)
 
     iterations = 200_000
     salt = secrets.token_bytes(16)

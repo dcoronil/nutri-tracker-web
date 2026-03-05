@@ -10,7 +10,8 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.database import get_session
 from app.main import create_app
-from app.models import EmailOTP, UserAccount
+from app.models import PendingRegistration
+from app.services.rate_limit import rate_limiter
 
 
 @pytest.fixture
@@ -23,6 +24,7 @@ def engine(tmp_path):
 
 @pytest.fixture
 def client(engine) -> Iterator[TestClient]:
+    rate_limiter.reset()
     app = create_app()
 
     def _get_session_override() -> Iterator[Session]:
@@ -43,8 +45,11 @@ def register_user(client: TestClient) -> dict[str, str]:
     register_response = client.post(
         "/auth/register",
         json={
+            "username": f"tester_{uuid4().hex[:8]}",
             "email": email,
             "password": "supersecret123",
+            "sex": "male",
+            "birth_date": "1993-01-15",
         },
     )
     assert register_response.status_code == 200
@@ -103,10 +108,9 @@ def expire_latest_otp(engine):
     def _expire(email: str) -> None:
         with Session(engine) as session:
             target = session.exec(
-                select(EmailOTP)
-                .join(UserAccount, UserAccount.id == EmailOTP.user_id)
-                .where(UserAccount.email == email)
-                .order_by(EmailOTP.created_at.desc())
+                select(PendingRegistration)
+                .where(PendingRegistration.email == email)
+                .order_by(PendingRegistration.created_at.desc())
             )
             record = target.first()
             assert record is not None

@@ -8,6 +8,7 @@ from app.services.nutrition import sanitize_numeric_values
 
 ConfidenceLevel = Literal["high", "medium", "low"]
 PortionSize = Literal["small", "medium", "large"]
+AppLocale = Literal["es", "en"]
 
 
 @dataclass(frozen=True)
@@ -84,11 +85,26 @@ DEFAULT_BASE = {
     "salt_g": 1.2,
 }
 
+INGREDIENT_LABEL_EN: dict[str, str] = {
+    "pollo": "chicken",
+    "arroz": "rice",
+    "pasta": "pasta",
+    "patata": "potato",
+    "ternera": "beef",
+    "huevo": "egg",
+    "pan": "bread",
+    "queso": "cheese",
+    "atun": "tuna",
+    "salmon": "salmon",
+    "ensalada": "salad",
+    "mayonesa": "mayonnaise",
+}
+
 
 def _confidence_level(score: int) -> ConfidenceLevel:
-    if score >= 4:
+    if score >= 6:
         return "high"
-    if score >= 2:
+    if score >= 4:
         return "medium"
     return "low"
 
@@ -120,7 +136,9 @@ def estimate_meal(
     quantity_note: str | None,
     photo_count: int,
     adjust_percent: int = 0,
+    locale: AppLocale = "es",
 ) -> dict[str, object]:
+    normalized_locale: AppLocale = "en" if str(locale).lower().startswith("en") else "es"
     lowered = description.lower().strip()
 
     detected_ingredients: list[str] = []
@@ -148,25 +166,50 @@ def estimate_meal(
     assumptions: list[str] = []
     if not detected_ingredients:
         base = DEFAULT_BASE.copy()
-        assumptions.append("No se detectaron ingredientes claros; se aplicó un plato mixto estándar.")
+        assumptions.append(
+            "No clear ingredients were detected; a standard mixed dish was applied."
+            if normalized_locale == "en"
+            else "No se detectaron ingredientes claros; se aplicó un plato mixto estándar."
+        )
     else:
-        assumptions.append(f"Ingredientes base detectados: {', '.join(detected_ingredients[:6])}.")
+        display_ingredients = (
+            [INGREDIENT_LABEL_EN.get(item, item) for item in detected_ingredients]
+            if normalized_locale == "en"
+            else detected_ingredients
+        )
+        assumptions.append(
+            f"Detected base ingredients: {', '.join(display_ingredients[:6])}."
+            if normalized_locale == "en"
+            else f"Ingredientes base detectados: {', '.join(display_ingredients[:6])}."
+        )
 
     portion_key = portion_size or "medium"
     portion_factor = PORTION_MULTIPLIER.get(portion_key, 1.0)
     base = {key: value * portion_factor for key, value in base.items()}
-    assumptions.append(f"Tamaño de ración asumido: {portion_key}.")
+    assumptions.append(
+        f"Assumed portion size: {portion_key}."
+        if normalized_locale == "en"
+        else f"Tamaño de ración asumido: {portion_key}."
+    )
 
     qty_factor = _extract_quantity_multiplier(quantity_note)
     if qty_factor != 1.0:
         base = {key: value * qty_factor for key, value in base.items()}
-        assumptions.append("Se ajustó la ración usando la cantidad indicada.")
+        assumptions.append(
+            "Portion size was adjusted using the provided quantity."
+            if normalized_locale == "en"
+            else "Se ajustó la ración usando la cantidad indicada."
+        )
 
     if has_added_fats:
         base["kcal"] += 90
         base["fat_g"] += 10
         base["salt_g"] += 0.2
-        assumptions.append("Se añadió margen por aceites/salsas.")
+        assumptions.append(
+            "A margin was added for oils/sauces."
+            if normalized_locale == "en"
+            else "Se añadió margen por aceites/salsas."
+        )
 
     # Conservative estimate: kcal/fat/sugars up, protein/fiber down.
     conservative = {
@@ -196,21 +239,43 @@ def estimate_meal(
 
     questions: list[str] = []
     if portion_size is None:
-        questions.append("¿La ración es pequeña, mediana o grande?")
+        questions.append(
+            "Is the portion small, medium, or large?"
+            if normalized_locale == "en"
+            else "¿La ración es pequeña, mediana o grande?"
+        )
     if has_added_fats is None:
-        questions.append("¿Lleva aceite, mantequilla o salsas añadidas?")
+        questions.append(
+            "Did it include oil, butter, or added sauces?"
+            if normalized_locale == "en"
+            else "¿Lleva aceite, mantequilla o salsas añadidas?"
+        )
     if not quantity_note:
-        questions.append("¿Cantidad aproximada? (ej: 1 plato, 2 cucharadas, 1 filete)")
+        questions.append(
+            "Approximate quantity? (e.g., 1 plate, 2 tablespoons, 1 fillet)"
+            if normalized_locale == "en"
+            else "¿Cantidad aproximada? (ej: 1 plato, 2 cucharadas, 1 filete)"
+        )
     if not detected_ingredients:
-        questions.append("Describe ingredientes principales para mejorar precisión.")
+        questions.append(
+            "Describe main ingredients to improve accuracy."
+            if normalized_locale == "en"
+            else "Describe ingredientes principales para mejorar precisión."
+        )
+
+    detected_output = (
+        [INGREDIENT_LABEL_EN.get(item, item) for item in detected_ingredients]
+        if normalized_locale == "en"
+        else detected_ingredients
+    )
 
     confidence_score = 0
-    if photo_count > 0:
+    if photo_count >= 2:
         confidence_score += 1
     if len(detected_ingredients) >= 2:
         confidence_score += 1
     if quantity_note:
-        confidence_score += 1
+        confidence_score += 2
     if portion_size is not None:
         confidence_score += 1
     if has_added_fats is not None:
@@ -220,6 +285,6 @@ def estimate_meal(
         "confidence_level": _confidence_level(confidence_score),
         "questions": questions,
         "assumptions": assumptions,
-        "detected_ingredients": detected_ingredients,
+        "detected_ingredients": detected_output,
         "nutrition": nutrition,
     }

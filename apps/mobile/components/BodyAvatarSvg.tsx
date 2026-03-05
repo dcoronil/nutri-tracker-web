@@ -1,6 +1,6 @@
 import { memo } from "react";
 import { StyleSheet, Text, View } from "react-native";
-import Svg, { Defs, G, LinearGradient, Path, Rect, Stop } from "react-native-svg";
+import Svg, { Defs, G, LinearGradient, Path, Stop } from "react-native-svg";
 
 export type BodyAvatarSvgProps = {
   sex: "male" | "female" | "other";
@@ -224,17 +224,11 @@ export const BodyAvatarSvg = memo(function BodyAvatarSvg(props: BodyAvatarSvgPro
       <View style={styles.canvasWrap}>
         <Svg width="100%" height={440} viewBox={silhouette.viewBox} preserveAspectRatio="xMidYMin meet">
           <Defs>
-            <LinearGradient id="avatar_bg" x1="0" y1="0" x2="0" y2="1">
-              <Stop offset="0" stopColor="#151515" />
-              <Stop offset="0.5" stopColor="#0f0f0f" />
-              <Stop offset="1" stopColor="#0a0a0a" />
-            </LinearGradient>
             <LinearGradient id="avatar_fill" x1="0" y1="0" x2="1" y2="1">
               <Stop offset="0" stopColor={palette.accent} stopOpacity={0.88} />
               <Stop offset="1" stopColor={palette.accent} stopOpacity={0.6} />
             </LinearGradient>
           </Defs>
-          <Rect x={0} y={0} width={viewBoxWidth} height={viewBoxHeight} fill="url(#avatar_bg)" />
 
           <Path d={silhouette.path} fill="transparent" stroke={palette.contour} strokeOpacity={0.25} strokeWidth={3} />
           <G transform={`translate(${centerX},0) scale(${torsoScaleX},1) translate(${-centerX},0)`}>
@@ -278,15 +272,14 @@ const styles = StyleSheet.create({
     gap: 14,
   },
   canvasWrap: {
-    borderWidth: 1,
-    borderColor: "#2d2d2d",
+    borderWidth: 0,
     borderRadius: 24,
-    backgroundColor: "#101010",
+    backgroundColor: "transparent",
     overflow: "hidden",
     position: "relative",
-    paddingHorizontal: 10,
-    paddingTop: 10,
-    paddingBottom: 6,
+    paddingHorizontal: 0,
+    paddingTop: 0,
+    paddingBottom: 0,
   },
   badge: {
     position: "absolute",
