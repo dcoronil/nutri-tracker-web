@@ -5,22 +5,19 @@
   "main": "node_modules/expo/AppEntry.js",
   "scripts": {
     "start": "expo start",
-    "devclient:start": "expo start --dev-client",
     "android": "expo start --android",
     "ios": "expo start --ios",
-    "web": "expo start --web",
-    "eas:build:ios:dev": "npx eas build --platform ios --profile development",
-    "eas:build:ios:preview": "npx eas build --platform ios --profile preview",
-    "eas:submit:ios": "npx eas submit --platform ios --profile production"
+    "web": "expo start --web"
   },
   "dependencies": {
+    "@react-native-community/datetimepicker": "8.4.4",
     "@react-native-community/slider": "5.0.1",
     "babel-preset-expo": "~54.0.10",
     "expo": "~54.0.0",
     "expo-asset": "~12.0.12",
     "expo-camera": "~17.0.10",
     "expo-constants": "~18.0.13",
-    "expo-dev-client": "~6.0.20",
+    "expo-image-manipulator": "~14.0.8",
     "expo-image-picker": "~17.0.10",
     "expo-secure-store": "~15.0.7",
     "expo-status-bar": "~3.0.9",

@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Animated,
@@ -6,26 +6,32 @@ import {
   Easing,
   Image,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   SafeAreaView,
   ScrollView,
   Share,
   StyleSheet,
-  Text,
-  TextInput,
+  Text as RNText,
+  TextInput as RNTextInput,
+  type TextInputProps,
+  type TextProps,
   Vibration,
   View,
 } from "react-native";
 import Slider from "@react-native-community/slider";
+import DateTimePicker, { DateTimePickerEvent } from "@react-native-community/datetimepicker";
 import { BarcodeScanningResult, CameraView, useCameraPermissions } from "expo-camera";
 import Constants from "expo-constants";
+import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
 import * as SecureStore from "expo-secure-store";
 import { StatusBar } from "expo-status-bar";
 import Svg, { Circle, G, Line, Path, Rect, SvgXml } from "react-native-svg";
 
 import { BodyAvatarSvg } from "./components/BodyAvatarSvg";
+import { I18nProvider, tGlobal, useI18n } from "./src/i18n";
 
 type NutritionBasis = "per_100g" | "per_100ml" | "per_serving";
 type LookupSource = "local" | "openfoodfacts_imported" | "openfoodfacts_incomplete" | "not_found";
@@ -34,18 +40,22 @@ type Sex = "male" | "female" | "other";
 type ActivityLevel = "sedentary" | "light" | "moderate" | "active" | "athlete";
 type GoalType = "lose" | "maintain" | "gain";
 type MainTab = "dashboard" | "add" | "body" | "history" | "settings";
-type AddMode = "hub" | "barcode" | "label_fix" | "meal_photo" | "manual";
-type QuickAddAction = Exclude<AddMode, "hub">;
+type AddMode = "hub" | "barcode" | "label_fix" | "meal_photo" | "manual" | "recipes";
+type QuickAddAction = "barcode" | "meal_photo" | "manual" | "recipes";
 type AddLaunchAction = {
   requestId: number;
   action: QuickAddAction;
 };
+type AddBackTarget = "hub" | "barcode_camera" | "manual" | "recipes";
 type AuthStackScreen = "welcome" | "signup" | "login";
 type OnboardingStep = 1 | 2 | 3;
 
 type AuthUser = {
   id: number;
   email: string;
+  username: string;
+  sex: Sex;
+  birth_date: string | null;
   email_verified: boolean;
   onboarding_completed: boolean;
 };
@@ -224,6 +234,8 @@ type MealEstimateQuestionsResponse = {
   question_items: MealEstimateQuestion[];
   assumptions: string[];
   detected_ingredients: string[];
+  analysis_id: string | null;
+  analysis_expires_at: string | null;
 };
 
 type ProductDataQuality = {
@@ -288,6 +300,13 @@ type MealPhotoEstimateResponse = {
   intake: Intake | null;
 };
 
+type MealEstimateOverride = {
+  kcal: number;
+  protein_g: number;
+  fat_g: number;
+  carbs_g: number;
+};
+
 type DaySummary = {
   date: string;
   goal: GoalPayload | null;
@@ -301,6 +320,9 @@ type CalendarDayEntry = {
   date: string;
   intake_count: number;
   kcal: number;
+  protein_g: number;
+  protein_goal_g: number | null;
+  weight_kg: number | null;
 };
 
 type CalendarMonthResponse = {
@@ -319,10 +341,17 @@ type AnalysisResponse = {
 type RegisterResponse = {
   user_id: number;
   email: string;
+  username: string;
   email_verified: boolean;
   onboarding_completed: boolean;
   message: string;
   debug_verification_code: string | null;
+};
+
+type UsernameAvailability = {
+  username: string;
+  available: boolean;
+  reason: string | null;
 };
 
 type AuthResponse = {
@@ -399,8 +428,11 @@ type GoalInputDraft = {
 };
 
 type RegisterInput = {
+  username: string;
   email: string;
   password: string;
+  sex: Sex;
+  birth_date: string;
 };
 
 type LoginInput = {
@@ -417,6 +449,7 @@ type AuthContextValue = {
   pendingVerificationEmail: string | null;
   otpHint: string | null;
   register: (input: RegisterInput) => Promise<RegisterResponse>;
+  checkUsernameAvailability: (username: string) => Promise<UsernameAvailability>;
   login: (input: LoginInput) => Promise<void>;
   verifyEmail: (email: string, code: string) => Promise<void>;
   resendCode: (email: string) => Promise<void>;
@@ -455,6 +488,7 @@ type AuthContextValue = {
     salt_g?: number;
   }) => Promise<Product>;
   searchFoods: (query: string, limit?: number) => Promise<FoodSearchResponse>;
+  fetchMyCommunityFoods: (limit?: number) => Promise<Product[]>;
   lookupByBarcode: (ean: string) => Promise<ProductLookupResponse>;
   createProductFromLabel: (input: {
     barcode?: string;
@@ -478,6 +512,8 @@ type AuthContextValue = {
     hasAddedFats?: boolean;
     quantityNote?: string;
     photos: string[];
+    locale?: "es" | "en";
+    onUploadProgress?: (progress: { loaded: number; total: number; ratio: number }) => void;
   }) => Promise<MealEstimateQuestionsResponse>;
   mealPhotoEstimateCalculate: (input: {
     description?: string;
@@ -485,9 +521,11 @@ type AuthContextValue = {
     portionSize?: "small" | "medium" | "large";
     hasAddedFats?: boolean;
     quantityNote?: string;
-    photos: string[];
+    photos?: string[];
+    analysisId?: string;
     adjustPercent?: number;
     commit?: boolean;
+    locale?: "es" | "en";
   }) => Promise<MealPhotoEstimateResponse>;
   mealPhotoEstimate: (input: {
     description?: string;
@@ -495,9 +533,12 @@ type AuthContextValue = {
     portionSize?: "small" | "medium" | "large";
     hasAddedFats?: boolean;
     quantityNote?: string;
-    photos: string[];
+    photos?: string[];
+    analysisId?: string;
     adjustPercent?: number;
     commit?: boolean;
+    locale?: "es" | "en";
+    overrides?: MealEstimateOverride;
   }) => Promise<MealPhotoEstimateResponse>;
   createIntake: (payload: {
     product_id: number;
@@ -535,12 +576,8 @@ type Segment = {
 };
 
 const TOKEN_STORAGE_KEY = "nutri_tracker_access_token";
+const MAX_MEAL_PHOTOS = 3;
 const DEV_SETTINGS_MODE = (process.env.EXPO_PUBLIC_DEV_SETTINGS ?? "false").toLowerCase() === "true";
-const COMMUNITY_BARCODE_PATTERN = /^\d{8,14}$/;
-const CALENDAR_LEFT_ARROW_PATH =
-  "M98.44,0H24.44C17.75,0,11.67,2.75,7.24,7.17C2.77,11.64,0,17.82,0,24.62v67.35c0,6.8,2.78,12.98,7.25,17.45 c4.42,4.42,10.51,7.17,17.19,7.17h74.01c6.68,0,12.77-2.75,17.19-7.17c4.47-4.47,7.24-10.65,7.24-17.45V24.62 c0-6.81-2.77-12.99-7.24-17.45C111.21,2.75,105.13,0,98.44,0L98.44,0z M50.64,46.95h28.33c0.85,0,1.62,0.34,2.17,0.9 c0.56,0.56,0.9,1.33,0.9,2.17c0,0.85-0.34,1.62-0.9,2.17c-0.56,0.56-1.32,0.9-2.17,0.9H50.64l9.53,10.92 c0.55,0.63,0.8,1.43,0.76,2.21c-0.05,0.79-0.39,1.55-1.02,2.12c-0.63,0.56-1.43,0.81-2.21,0.77c-0.78-0.05-1.54-0.39-2.1-1.02 l-14-16.04c-0.52-0.59-0.77-1.33-0.77-2.06c0.01-0.73,0.28-1.46,0.8-2.02l14-16.03c0.56-0.61,1.31-0.95,2.08-1 c0.78-0.05,1.57,0.21,2.2,0.77l0.02,0.02c0.62,0.56,0.95,1.32,1,2.09v0.01c0.04,0.78-0.21,1.58-0.77,2.21L50.64,46.95L50.64,46.95z M117.95,82.85c-0.85,3.45-2.55,6.55-4.83,9.01c-3.36,3.62-7.99,5.87-13.1,5.87H22.85c-0.21,0-0.41,0-0.62-0.01l-1.25-0.09 c-4.36-0.47-8.29-2.6-11.23-5.77c-2.28-2.46-3.97-5.55-4.83-9V24.62c0-5.28,2.17-10.09,5.67-13.58C14.14,7.5,19.04,5.3,24.44,5.3 h74.01c5.4,0,10.3,2.2,13.84,5.74c3.49,3.49,5.66,8.3,5.66,13.58V82.85L117.95,82.85z";
-const CALENDAR_RIGHT_ARROW_PATH =
-  "M24.44,0h74.01c6.68,0,12.77,2.75,17.19,7.17c4.47,4.47,7.24,10.65,7.24,17.45v67.35c0,6.8-2.78,12.98-7.25,17.45 c-4.42,4.42-10.51,7.17-17.19,7.17H24.44c-6.68,0-12.77-2.75-17.19-7.17C2.77,104.96,0,98.78,0,91.98V24.62 c0-6.81,2.77-12.99,7.24-17.45C11.67,2.75,17.75,0,24.44,0L24.44,0z M72.24,46.95H43.9c-0.85,0-1.62,0.34-2.17,0.9 c-0.56,0.56-0.9,1.33-0.9,2.17c0,0.85,0.34,1.62,0.9,2.17c0.56,0.56,1.32,0.9,2.17,0.9h28.33L62.7,64.01 c-0.55,0.63-0.8,1.43-0.76,2.21c0.05,0.79,0.39,1.55,1.02,2.12c0.63,0.56,1.43,0.81,2.21,0.77c0.78-0.05,1.54-0.39,2.1-1.02 l14-16.04c0.52-0.59,0.77-1.33,0.77-2.06c-0.01-0.73-0.28-1.46-0.8-2.02l-14-16.03c-0.56-0.61-1.31-0.95-2.08-1 c-0.78-0.05-1.57,0.21-2.2,0.77l-0.02,0.02c-0.62,0.56-0.95,1.32-1,2.09v0.01c-0.04,0.78,0.21,1.58,0.77,2.21L72.24,46.95 L72.24,46.95z M4.93,82.85c0.85,3.45,2.55,6.55,4.83,9.01c3.36,3.62,7.99,5.87,13.1,5.87h77.17c0.21,0,0.41,0,0.62-0.01l1.25-0.09 c4.36-0.47,8.29-2.6,11.23-5.77c2.28-2.46,3.97-5.55,4.83-9V24.62c0-5.28-2.17-10.09-5.67-13.58c-3.54-3.54-8.44-5.74-13.84-5.74 H24.44c-5.4,0-10.3,2.2-13.84,5.74c-3.49,3.49-5.66,8.3-5.66,13.58V82.85L4.93,82.85z";
 const STREAK_FLAME_SVG_XML =
   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 92.27 122.88"><g><path fill="#EC6F59" fill-rule="evenodd" clip-rule="evenodd" d="M18.61,54.89C15.7,28.8,30.94,10.45,59.52,0C42.02,22.71,74.44,47.31,76.23,70.89c4.19-7.15,6.57-16.69,7.04-29.45c21.43,33.62,3.66,88.57-43.5,80.67c-4.33-0.72-8.5-2.09-12.3-4.13C10.27,108.8,0,88.79,0,69.68C0,57.5,5.21,46.63,11.95,37.99C12.85,46.45,14.77,52.76,18.61,54.89L18.61,54.89z"/><path fill="#FAD15C" fill-rule="evenodd" clip-rule="evenodd" d="M33.87,92.58c-4.86-12.55-4.19-32.82,9.42-39.93c0.1,23.3,23.05,26.27,18.8,51.14c3.92-4.44,5.9-11.54,6.25-17.15c6.22,14.24,1.34,25.63-7.53,31.43c-26.97,17.64-50.19-18.12-34.75-37.72C26.53,84.73,31.89,91.49,33.87,92.58L33.87,92.58z"/></g></svg>';
 const theme = {
@@ -652,6 +689,9 @@ function parseApiError(error: unknown): string {
   if (message.includes("Invalid EAN/UPC")) {
     return "El código de barras debe tener entre 8 y 14 dígitos.";
   }
+  if (message.includes("Internal server error")) {
+    return "Error temporal del servidor. Inténtalo de nuevo en unos segundos.";
+  }
   if (message.includes("String should have at least")) {
     return "Hay campos con menos caracteres de los requeridos.";
   }
@@ -701,6 +741,68 @@ function toPositiveNumberOrNull(input: string): number | null {
     return null;
   }
   return toOptionalNumber(trimmed);
+}
+
+function parseBirthDateInput(value: string): Date | null {
+  const trimmed = value.trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    return null;
+  }
+  const [yearRaw, monthRaw, dayRaw] = trimmed.split("-");
+  const year = Number(yearRaw);
+  const month = Number(monthRaw);
+  const day = Number(dayRaw);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
+    return null;
+  }
+  const result = new Date(Date.UTC(year, month - 1, day));
+  if (
+    result.getUTCFullYear() !== year ||
+    result.getUTCMonth() + 1 !== month ||
+    result.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  return result;
+}
+
+function ageFromBirthDateString(birthDate: string | null | undefined, now = new Date()): number | null {
+  if (!birthDate) {
+    return null;
+  }
+  const parsed = parseBirthDateInput(birthDate);
+  if (!parsed) {
+    return null;
+  }
+
+  const year = parsed.getUTCFullYear();
+  const month = parsed.getUTCMonth() + 1;
+  const day = parsed.getUTCDate();
+  let age = now.getFullYear() - year;
+  if (now.getMonth() + 1 < month || (now.getMonth() + 1 === month && now.getDate() < day)) {
+    age -= 1;
+  }
+  return age >= 0 ? age : null;
+}
+
+function formatDateForApi(value: Date): string {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function normalizeAnswerToken(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+function isUnknownAnswer(value: string): boolean {
+  const normalized = normalizeAnswerToken(value);
+  return normalized === "no se" || normalized === "i don't know" || normalized === "idk";
 }
 
 function bmiValue(weightKg: number | null, heightCm: number | null): number | null {
@@ -780,6 +882,32 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
+function nutritionBasisLabel(product: Product): string {
+  if (product.nutrition_basis === "per_100ml") {
+    return tx("Valores por 100 ml");
+  }
+  if (product.nutrition_basis === "per_serving") {
+    if (product.serving_size_g && product.serving_size_g > 0) {
+      return tx("Valores por porción ({{servingSize}} g)", { servingSize: product.serving_size_g });
+    }
+    return tx("Valores por porción");
+  }
+  return tx("Valores por 100 g");
+}
+
+function normalizeDisplayProductName(name: string | null | undefined): string {
+  const base = (name ?? "").trim();
+  if (!base) {
+    return "Producto";
+  }
+  const cleaned = base
+    .replace(/^estimado:\s*/i, "")
+    .replace(/^estimaci[oó]n:\s*/i, "")
+    .replace(/^estimate:\s*/i, "")
+    .trim();
+  return cleaned || "Producto";
+}
+
 function calendarCells(monthKey: string): Array<number | null> {
   const base = monthFromKey(monthKey);
   const year = base.getFullYear();
@@ -821,6 +949,45 @@ function AuthProvider({ children }: { children: import("react").ReactNode }) {
   const [otpHint, setOtpHint] = useState<string | null>(null);
   const [apiBaseUrl, setApiBaseUrl] = useState(inferApiBaseUrl());
 
+  const parseApiBody = useCallback((text: string): unknown => {
+    if (!text) {
+      return null;
+    }
+    try {
+      return JSON.parse(text) as unknown;
+    } catch {
+      return text;
+    }
+  }, []);
+
+  const extractApiErrorDetail = useCallback((body: unknown, statusCode: number): string => {
+    let detail: string | undefined;
+    if (typeof body === "object" && body !== null) {
+      const detailValue = (body as { detail?: unknown }).detail ?? (body as { message?: unknown }).message;
+      if (typeof detailValue === "string") {
+        detail = detailValue;
+      } else if (Array.isArray(detailValue)) {
+        const first = detailValue[0];
+        if (typeof first === "string") {
+          detail = first;
+        } else if (first && typeof first === "object") {
+          const msg = (first as { msg?: string }).msg;
+          const loc = (first as { loc?: Array<string | number> }).loc;
+          if (msg && Array.isArray(loc) && loc.length > 0) {
+            detail = `${loc.join(".")}: ${msg}`;
+          } else if (msg) {
+            detail = msg;
+          }
+        }
+      } else if (detailValue != null) {
+        detail = String(detailValue);
+      }
+    } else if (typeof body === "string" && body.trim()) {
+      detail = body;
+    }
+    return detail ?? `HTTP ${statusCode}`;
+  }, []);
+
   const request = useCallback(
     async <T,>(path: string, init?: RequestInit, authToken?: string | null): Promise<T> => {
       const headers = new Headers(init?.headers ?? {});
@@ -835,49 +1002,65 @@ function AuthProvider({ children }: { children: import("react").ReactNode }) {
       });
 
       const text = await response.text();
-      let body: unknown = null;
-
-      if (text) {
-        try {
-          body = JSON.parse(text) as unknown;
-        } catch {
-          body = text;
-        }
-      }
+      const body = parseApiBody(text);
 
       if (!response.ok) {
-        let detail: string | undefined;
-
-        if (typeof body === "object" && body !== null) {
-          const detailValue = (body as { detail?: unknown }).detail ?? (body as { message?: unknown }).message;
-          if (typeof detailValue === "string") {
-            detail = detailValue;
-          } else if (Array.isArray(detailValue)) {
-            const first = detailValue[0];
-            if (typeof first === "string") {
-              detail = first;
-            } else if (first && typeof first === "object") {
-              const msg = (first as { msg?: string }).msg;
-              const loc = (first as { loc?: Array<string | number> }).loc;
-              if (msg && Array.isArray(loc) && loc.length > 0) {
-                detail = `${loc.join(".")}: ${msg}`;
-              } else if (msg) {
-                detail = msg;
-              }
-            }
-          } else if (detailValue != null) {
-            detail = String(detailValue);
-          }
-        } else if (typeof body === "string" && body.trim()) {
-          detail = body;
-        }
-
-        throw new Error(detail ?? `HTTP ${response.status}`);
+        throw new Error(extractApiErrorDetail(body, response.status));
       }
 
       return body as T;
     },
-    [apiBaseUrl, token],
+    [apiBaseUrl, extractApiErrorDetail, parseApiBody, token],
+  );
+
+  const requestMultipartWithProgress = useCallback(
+    async <T,>(
+      path: string,
+      formData: FormData,
+      options?: {
+        authToken?: string | null;
+        timeoutMs?: number;
+        onUploadProgress?: (progress: { loaded: number; total: number; ratio: number }) => void;
+      },
+    ): Promise<T> => {
+      const targetUrl = `${normalizeBaseUrl(apiBaseUrl)}${path}`;
+      const effectiveToken = options?.authToken ?? token;
+      const timeoutMs = options?.timeoutMs ?? 45000;
+
+      return await new Promise<T>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", targetUrl);
+        if (effectiveToken) {
+          xhr.setRequestHeader("Authorization", `Bearer ${effectiveToken}`);
+        }
+        xhr.timeout = timeoutMs;
+
+        if (xhr.upload && options?.onUploadProgress) {
+          xhr.upload.onprogress = (event) => {
+            if (!event.lengthComputable) {
+              return;
+            }
+            const total = event.total > 0 ? event.total : 1;
+            const ratio = Math.max(0, Math.min(1, event.loaded / total));
+            options.onUploadProgress?.({ loaded: event.loaded, total, ratio });
+          };
+        }
+
+        xhr.onload = () => {
+          const body = parseApiBody(xhr.responseText ?? "");
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve(body as T);
+            return;
+          }
+          reject(new Error(extractApiErrorDetail(body, xhr.status)));
+        };
+        xhr.onerror = () => reject(new Error("Network request failed"));
+        xhr.ontimeout = () => reject(new Error("Request timeout"));
+
+        xhr.send(formData);
+      });
+    },
+    [apiBaseUrl, extractApiErrorDetail, parseApiBody, token],
   );
 
   const checkHealth = useCallback(
@@ -953,6 +1136,16 @@ function AuthProvider({ children }: { children: import("react").ReactNode }) {
       setToken(null);
       await SecureStore.deleteItemAsync(TOKEN_STORAGE_KEY);
       return response;
+    },
+    [request],
+  );
+
+  const checkUsernameAvailability = useCallback(
+    async (username: string): Promise<UsernameAvailability> => {
+      const normalized = username.trim().toLowerCase();
+      return request<UsernameAvailability>(`/auth/check-username?username=${encodeURIComponent(normalized)}`, {
+        method: "GET",
+      });
     },
     [request],
   );
@@ -1202,6 +1395,11 @@ function AuthProvider({ children }: { children: import("react").ReactNode }) {
     [request],
   );
 
+  const fetchMyCommunityFoods = useCallback(
+    async (limit = 100): Promise<Product[]> => request<Product[]>(`/foods/mine?limit=${limit}`),
+    [request],
+  );
+
   const lookupByBarcode = useCallback(
     async (ean: string): Promise<ProductLookupResponse> => request<ProductLookupResponse>(`/products/by_barcode/${ean}`),
     [request],
@@ -1308,9 +1506,14 @@ function AuthProvider({ children }: { children: import("react").ReactNode }) {
       hasAddedFats?: boolean;
       quantityNote?: string;
       photos: string[];
+      locale?: "es" | "en";
+      onUploadProgress?: (progress: { loaded: number; total: number; ratio: number }) => void;
     }): Promise<MealEstimateQuestionsResponse> => {
       const form = new FormData();
       form.append("description", input.description?.trim() ?? "");
+      if (input.locale) {
+        form.append("locale", input.locale);
+      }
       if (input.portionSize) {
         form.append("portion_size", input.portionSize);
       }
@@ -1331,12 +1534,11 @@ function AuthProvider({ children }: { children: import("react").ReactNode }) {
           } as unknown as Blob,
         );
       });
-      return request<MealEstimateQuestionsResponse>("/meal-photo-estimate/questions", {
-        method: "POST",
-        body: form,
+      return requestMultipartWithProgress<MealEstimateQuestionsResponse>("/meal-photo-estimate/questions", form, {
+        onUploadProgress: input.onUploadProgress,
       });
     },
-    [request],
+    [requestMultipartWithProgress],
   );
 
   const mealPhotoEstimateCalculate = useCallback(
@@ -1346,12 +1548,20 @@ function AuthProvider({ children }: { children: import("react").ReactNode }) {
       portionSize?: "small" | "medium" | "large";
       hasAddedFats?: boolean;
       quantityNote?: string;
-      photos: string[];
+      photos?: string[];
+      analysisId?: string;
       adjustPercent?: number;
       commit?: boolean;
+      locale?: "es" | "en";
     }): Promise<MealPhotoEstimateResponse> => {
       const form = new FormData();
       form.append("description", input.description?.trim() ?? "");
+      if (input.locale) {
+        form.append("locale", input.locale);
+      }
+      if (input.analysisId?.trim()) {
+        form.append("analysis_id", input.analysisId.trim());
+      }
       if (input.answers && Object.keys(input.answers).length > 0) {
         form.append("answers_json", JSON.stringify(input.answers));
       }
@@ -1370,7 +1580,7 @@ function AuthProvider({ children }: { children: import("react").ReactNode }) {
       if (input.commit) {
         form.append("commit", "true");
       }
-      input.photos.forEach((uri, index) => {
+      (input.photos ?? []).forEach((uri, index) => {
         const name = uri.split("/").pop() || `meal-estimate-${index + 1}.jpg`;
         form.append(
           "photos",
@@ -1396,12 +1606,21 @@ function AuthProvider({ children }: { children: import("react").ReactNode }) {
       portionSize?: "small" | "medium" | "large";
       hasAddedFats?: boolean;
       quantityNote?: string;
-      photos: string[];
+      photos?: string[];
+      analysisId?: string;
       adjustPercent?: number;
       commit?: boolean;
+      locale?: "es" | "en";
+      overrides?: MealEstimateOverride;
     }): Promise<MealPhotoEstimateResponse> => {
       const form = new FormData();
       form.append("description", input.description?.trim() ?? "");
+      if (input.locale) {
+        form.append("locale", input.locale);
+      }
+      if (input.analysisId?.trim()) {
+        form.append("analysis_id", input.analysisId.trim());
+      }
       if (input.answers && Object.keys(input.answers).length > 0) {
         form.append("answers_json", JSON.stringify(input.answers));
       }
@@ -1417,10 +1636,16 @@ function AuthProvider({ children }: { children: import("react").ReactNode }) {
       if (typeof input.adjustPercent === "number") {
         form.append("adjust_percent", String(Math.round(input.adjustPercent)));
       }
+      if (input.overrides) {
+        form.append("override_kcal", String(input.overrides.kcal));
+        form.append("override_protein_g", String(input.overrides.protein_g));
+        form.append("override_fat_g", String(input.overrides.fat_g));
+        form.append("override_carbs_g", String(input.overrides.carbs_g));
+      }
       if (input.commit) {
         form.append("commit", "true");
       }
-      input.photos.forEach((uri, index) => {
+      (input.photos ?? []).forEach((uri, index) => {
         const name = uri.split("/").pop() || `meal-estimate-${index + 1}.jpg`;
         form.append(
           "photos",
@@ -1549,6 +1774,7 @@ function AuthProvider({ children }: { children: import("react").ReactNode }) {
       pendingVerificationEmail,
       otpHint,
       register,
+      checkUsernameAvailability,
       login,
       verifyEmail,
       resendCode,
@@ -1571,6 +1797,7 @@ function AuthProvider({ children }: { children: import("react").ReactNode }) {
       fetchProductDataQuality,
       createCommunityFood,
       searchFoods,
+      fetchMyCommunityFoods,
       lookupByBarcode,
       createProductFromLabel,
       correctProductFromLabel,
@@ -1620,6 +1847,7 @@ function AuthProvider({ children }: { children: import("react").ReactNode }) {
       fetchUserAIKeyStatus,
       fetchProductDataQuality,
       searchFoods,
+      fetchMyCommunityFoods,
       fetchMeasurementLogs,
       fetchGoal,
       fetchWeightLogs,
@@ -1632,6 +1860,7 @@ function AuthProvider({ children }: { children: import("react").ReactNode }) {
       profile,
       refreshMe,
       register,
+      checkUsernameAvailability,
       resendCode,
       saveGoal,
       saveProfile,
@@ -1646,6 +1875,141 @@ function AuthProvider({ children }: { children: import("react").ReactNode }) {
   return <authContext.Provider value={value}>{children}</authContext.Provider>;
 }
 
+function translateNode(node: import("react").ReactNode, t: (key: string) => string): import("react").ReactNode {
+  if (typeof node === "string") {
+    return t(node);
+  }
+  if (Array.isArray(node)) {
+    return node.map((entry, index) => <Fragment key={`i18n-node-${index}`}>{translateNode(entry, t)}</Fragment>);
+  }
+  return node;
+}
+
+function Text(props: TextProps) {
+  const { t } = useI18n();
+  return <RNText {...props}>{translateNode(props.children, t)}</RNText>;
+}
+
+function TextInput(props: TextInputProps) {
+  const { t } = useI18n();
+  const placeholder = typeof props.placeholder === "string" ? t(props.placeholder) : props.placeholder;
+  return <RNTextInput {...props} placeholder={placeholder} />;
+}
+
+function tx(key: string, vars?: Record<string, string | number | null | undefined>): string {
+  return tGlobal(key, vars);
+}
+
+type InAppAlertButton = {
+  text?: string;
+  style?: "default" | "cancel" | "destructive";
+  onPress?: () => void;
+};
+
+type InAppAlertState = {
+  title: string;
+  message?: string;
+  buttons: InAppAlertButton[];
+};
+
+let inAppAlertPresenter: ((payload: InAppAlertState) => void) | null = null;
+
+function showAlert(...args: Parameters<typeof Alert.alert>) {
+  const [title, message, buttons, options] = args;
+
+  const translatedButtons: InAppAlertButton[] =
+    buttons?.map((button) => ({
+      ...button,
+      text: typeof button.text === "string" ? tx(button.text) : button.text,
+    })) ?? [{ text: tx("Aceptar"), style: "default" }];
+
+  const translatedTitle = typeof title === "string" ? tx(title) : String(title ?? "");
+  const translatedMessage = typeof message === "string" ? tx(message) : message ? String(message) : undefined;
+
+  if (inAppAlertPresenter) {
+    inAppAlertPresenter({
+      title: translatedTitle,
+      message: translatedMessage,
+      buttons: translatedButtons,
+    });
+    return;
+  }
+
+  Alert.alert(
+    translatedTitle,
+    translatedMessage,
+    translatedButtons,
+    options,
+  );
+}
+
+function InAppAlertHost() {
+  const [activeAlert, setActiveAlert] = useState<InAppAlertState | null>(null);
+
+  useEffect(() => {
+    inAppAlertPresenter = (payload) => setActiveAlert(payload);
+    return () => {
+      inAppAlertPresenter = null;
+    };
+  }, []);
+
+  if (!activeAlert) {
+    return null;
+  }
+
+  const buttons = activeAlert.buttons.length ? activeAlert.buttons : [{ text: tx("Aceptar"), style: "default" as const }];
+  const cancelButton = buttons.find((button) => button.style === "cancel");
+  const fallbackCloseButton = buttons[buttons.length - 1];
+
+  const dismissWith = (button: InAppAlertButton | undefined) => {
+    setActiveAlert(null);
+    setTimeout(() => {
+      button?.onPress?.();
+    }, 0);
+  };
+
+  return (
+    <Modal transparent animationType="fade" visible onRequestClose={() => dismissWith(cancelButton ?? fallbackCloseButton)}>
+      <View style={styles.inAppAlertLayer}>
+        <Pressable style={styles.inAppAlertBackdrop} onPress={() => dismissWith(cancelButton ?? fallbackCloseButton)} />
+        <View style={styles.inAppAlertCard}>
+          <Text style={styles.inAppAlertTitle}>{activeAlert.title}</Text>
+          {activeAlert.message ? <Text style={styles.inAppAlertMessage}>{activeAlert.message}</Text> : null}
+          <View style={styles.inAppAlertButtons}>
+            {buttons.map((button, index) => (
+              <Pressable
+                key={`${button.text ?? "btn"}-${index}`}
+                onPress={() => dismissWith(button)}
+                style={[
+                  styles.inAppAlertButton,
+                  button.style === "destructive"
+                    ? styles.inAppAlertButtonDanger
+                    : button.style === "cancel"
+                      ? styles.inAppAlertButtonSecondary
+                      : styles.inAppAlertButtonPrimary,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.inAppAlertButtonText,
+                    button.style === "destructive"
+                      ? styles.inAppAlertButtonTextDanger
+                      : button.style === "cancel"
+                        ? styles.inAppAlertButtonTextSecondary
+                        : styles.inAppAlertButtonTextPrimary,
+                  ]}
+                >
+                  {button.text ?? tx("Aceptar")}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 function LoadingGate() {
   return (
     <SafeAreaView style={styles.screen}>
@@ -1657,11 +2021,45 @@ function LoadingGate() {
   );
 }
 
-function AppHeader({ title, subtitle }: { title: string; subtitle: string }) {
+function AppHeader({
+  title,
+  subtitle,
+  onBack,
+  rightActionLabel,
+  onRightAction,
+  rightActionDisabled,
+}: {
+  title: string;
+  subtitle: string;
+  onBack?: () => void;
+  rightActionLabel?: string;
+  onRightAction?: () => void;
+  rightActionDisabled?: boolean;
+}) {
   return (
     <View style={styles.headerWrap}>
+      <View style={styles.headerTopRow}>
+        {onBack ? (
+          <Pressable onPress={onBack} style={styles.headerBackButton}>
+            <Text style={styles.headerBackIcon}>←</Text>
+          </Pressable>
+        ) : (
+          <View style={styles.headerTopSpacer} />
+        )}
+        {rightActionLabel && onRightAction ? (
+          <Pressable
+            onPress={onRightAction}
+            disabled={rightActionDisabled}
+            style={[styles.headerRightAction, rightActionDisabled && styles.disabledButton]}
+          >
+            <Text style={styles.headerRightActionText}>{rightActionLabel}</Text>
+          </Pressable>
+        ) : (
+          <View style={styles.headerTopSpacer} />
+        )}
+      </View>
       <Text style={styles.headerTitle}>{title}</Text>
-      <Text style={styles.headerSubtitle}>{subtitle}</Text>
+      {subtitle ? <Text style={styles.headerSubtitle}>{subtitle}</Text> : null}
     </View>
   );
 }
@@ -1688,6 +2086,17 @@ function InputField(props: {
         placeholderTextColor={theme.muted}
         style={styles.input}
       />
+    </View>
+  );
+}
+
+function ReadOnlyField(props: { label: string; value: string }) {
+  return (
+    <View style={styles.fieldWrap}>
+      <Text style={styles.fieldLabel}>{props.label}</Text>
+      <View style={styles.readOnlyField}>
+        <Text style={styles.readOnlyFieldValue}>{props.value}</Text>
+      </View>
     </View>
   );
 }
@@ -1896,47 +2305,212 @@ function WelcomeScreen({ onCreate, onLogin }: { onCreate: () => void; onLogin: (
 
 function SignupScreen({ onBack }: { onBack: () => void }) {
   const auth = useAuth();
+  const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [birthDate, setBirthDate] = useState<Date>(new Date(2000, 0, 1));
+  const [sex, setSex] = useState<Sex>("other");
+  const [showBirthDatePicker, setShowBirthDatePicker] = useState(false);
+  const [usernameStatus, setUsernameStatus] = useState<{
+    state: "idle" | "checking" | "available" | "unavailable" | "invalid";
+    message: string;
+  }>({
+    state: "idle",
+    message: "",
+  });
+  const usernameCheckSeqRef = useRef(0);
+  const usernameAlertedRef = useRef<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const birthDateValue = formatDateForApi(birthDate);
+
+  useEffect(() => {
+    const normalizedUsername = username.trim().toLowerCase();
+    if (!normalizedUsername) {
+      setUsernameStatus({ state: "idle", message: "" });
+      usernameAlertedRef.current = null;
+      return;
+    }
+
+    if (!/^[a-z0-9._]{3,32}$/.test(normalizedUsername)) {
+      setUsernameStatus({
+        state: "invalid",
+        message: "Usa 3-32 caracteres: letras minúsculas, números, punto o guion bajo.",
+      });
+      return;
+    }
+
+    setUsernameStatus({ state: "checking", message: "Comprobando disponibilidad..." });
+    const checkSeq = usernameCheckSeqRef.current + 1;
+    usernameCheckSeqRef.current = checkSeq;
+
+    const timer = setTimeout(() => {
+      void (async () => {
+        try {
+          const availability = await auth.checkUsernameAvailability(normalizedUsername);
+          if (usernameCheckSeqRef.current !== checkSeq) {
+            return;
+          }
+
+          if (availability.available) {
+            setUsernameStatus({
+              state: "available",
+              message: "Nombre disponible.",
+            });
+            usernameAlertedRef.current = null;
+            return;
+          }
+
+          const message = availability.reason ?? "Ese nombre de usuario no está disponible.";
+          setUsernameStatus({
+            state: "unavailable",
+            message,
+          });
+          if (usernameAlertedRef.current !== normalizedUsername) {
+            showAlert("Usuario", message);
+            usernameAlertedRef.current = normalizedUsername;
+          }
+        } catch {
+          if (usernameCheckSeqRef.current !== checkSeq) {
+            return;
+          }
+          setUsernameStatus({
+            state: "idle",
+            message: "",
+          });
+        }
+      })();
+    }, 350);
+
+    return () => clearTimeout(timer);
+  }, [auth, username]);
+
+  const onBirthDateChange = (event: DateTimePickerEvent, selectedDate?: Date) => {
+    if (Platform.OS === "android") {
+      setShowBirthDatePicker(false);
+    }
+    if (event.type === "dismissed") {
+      return;
+    }
+    if (selectedDate) {
+      setBirthDate(new Date(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate()));
+    }
+  };
 
   const submit = async () => {
-    if (!email.trim() || !password.trim()) {
-      Alert.alert("Faltan datos", "Completa email y contraseña.");
+    const normalizedUsername = username.trim().toLowerCase();
+    if (!normalizedUsername || !email.trim() || !password.trim()) {
+      showAlert("Faltan datos", "Completa usuario, email, contraseña, sexo y fecha de nacimiento.");
+      return;
+    }
+    if (!/^[a-z0-9._]{3,32}$/.test(normalizedUsername)) {
+      showAlert("Usuario", "Usa 3-32 caracteres: letras minúsculas, números, punto o guion bajo.");
       return;
     }
     if (password.length < 8) {
-      Alert.alert("Contraseña", "Debe tener al menos 8 caracteres.");
+      showAlert("Contraseña", "Debe tener al menos 8 caracteres.");
       return;
     }
     if (password !== confirmPassword) {
-      Alert.alert("Contraseña", "Las contraseñas no coinciden.");
+      showAlert("Contraseña", "Las contraseñas no coinciden.");
+      return;
+    }
+    if (usernameStatus.state === "checking") {
+      showAlert("Usuario", "Comprobando disponibilidad del nombre de usuario.");
+      return;
+    }
+    if (usernameStatus.state === "invalid" || usernameStatus.state === "unavailable") {
+      showAlert("Usuario", usernameStatus.message || "Ese nombre de usuario no está disponible.");
+      return;
+    }
+    const age = ageFromBirthDateString(birthDateValue);
+    if (age === null || age < 13) {
+      showAlert("Fecha de nacimiento", "Debes tener al menos 13 años.");
       return;
     }
 
     setLoading(true);
     try {
-      const response = await auth.register({ email: email.trim().toLowerCase(), password });
-      Alert.alert("Cuenta creada", response.message);
+      const response = await auth.register({
+        username: normalizedUsername,
+        email: email.trim().toLowerCase(),
+        password,
+        sex,
+        birth_date: birthDateValue,
+      });
+      showAlert("Cuenta creada", response.message);
     } catch (error) {
-      Alert.alert("Registro", parseApiError(error));
+      showAlert("Registro", parseApiError(error));
     } finally {
       setLoading(false);
     }
   };
 
+  const isSubmitDisabled =
+    loading ||
+    usernameStatus.state === "checking" ||
+    usernameStatus.state === "invalid" ||
+    usernameStatus.state === "unavailable";
+
   return (
     <SafeAreaView style={styles.screen}>
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.flex1}>
         <ScrollView contentContainerStyle={styles.authScroll} keyboardShouldPersistTaps="handled">
-          <AppHeader title="Crear cuenta" subtitle="Solo email y contraseña, luego verificas con código OTP." />
+          <AppHeader title="Crear cuenta" subtitle="Define cuenta, sexo y fecha de nacimiento; luego verificas con OTP." />
 
+          <InputField
+            label="Nombre de usuario"
+            value={username}
+            onChangeText={setUsername}
+            autoCapitalize="none"
+          />
+          {usernameStatus.message ? (
+            <Text
+              style={[
+                styles.usernameStatusText,
+                usernameStatus.state === "available"
+                  ? styles.usernameStatusTextOk
+                  : usernameStatus.state === "unavailable" || usernameStatus.state === "invalid"
+                    ? styles.usernameStatusTextError
+                    : undefined,
+              ]}
+            >
+              {usernameStatus.message}
+            </Text>
+          ) : null}
           <InputField label="Email" value={email} onChangeText={setEmail} keyboardType="email-address" />
           <InputField label="Contraseña" value={password} onChangeText={setPassword} secureTextEntry />
           <InputField label="Confirmar contraseña" value={confirmPassword} onChangeText={setConfirmPassword} secureTextEntry />
+          <ChoiceRow
+            label="Sexo"
+            value={sex}
+            onChange={setSex}
+            options={[
+              { label: "Masculino", value: "male" },
+              { label: "Femenino", value: "female" },
+              { label: "Otro", value: "other" },
+            ]}
+          />
+          <View style={styles.fieldWrap}>
+            <Text style={styles.fieldLabel}>Fecha de nacimiento</Text>
+            <Pressable style={styles.dateFieldButton} onPress={() => setShowBirthDatePicker(true)}>
+              <Text style={styles.dateFieldButtonText}>{birthDateValue}</Text>
+            </Pressable>
+          </View>
+          {showBirthDatePicker ? (
+            <View style={styles.birthDatePickerWrap}>
+              <DateTimePicker
+                value={birthDate}
+                mode="date"
+                display={Platform.OS === "ios" ? "spinner" : "default"}
+                maximumDate={new Date()}
+                onChange={onBirthDateChange}
+              />
+              {Platform.OS === "ios" ? <SecondaryButton title="Listo" onPress={() => setShowBirthDatePicker(false)} /> : null}
+            </View>
+          ) : null}
 
-          <PrimaryButton title="Crear cuenta" onPress={submit} loading={loading} />
+          <PrimaryButton title="Crear cuenta" onPress={submit} loading={loading} disabled={isSubmitDisabled} />
           <SecondaryButton title="Volver" onPress={onBack} />
         </ScrollView>
       </KeyboardAvoidingView>
@@ -1952,7 +2526,7 @@ function LoginScreen({ onBack }: { onBack: () => void }) {
 
   const submit = async () => {
     if (!email.trim() || !password.trim()) {
-      Alert.alert("Faltan datos", "Completa email y contraseña.");
+      showAlert("Faltan datos", "Completa email y contraseña.");
       return;
     }
 
@@ -1960,7 +2534,7 @@ function LoginScreen({ onBack }: { onBack: () => void }) {
     try {
       await auth.login({ email: email.trim().toLowerCase(), password });
     } catch (error) {
-      Alert.alert("Login", parseApiError(error));
+      showAlert("Login", parseApiError(error));
     } finally {
       setLoading(false);
     }
@@ -1985,15 +2559,12 @@ function LoginScreen({ onBack }: { onBack: () => void }) {
 
 function AuthStack() {
   const [screen, setScreen] = useState<AuthStackScreen>("welcome");
-
   if (screen === "signup") {
     return <SignupScreen onBack={() => setScreen("welcome")} />;
   }
-
   if (screen === "login") {
     return <LoginScreen onBack={() => setScreen("welcome")} />;
   }
-
   return <WelcomeScreen onCreate={() => setScreen("signup")} onLogin={() => setScreen("login")} />;
 }
 
@@ -2026,7 +2597,7 @@ function VerifyEmailOnlyScreen() {
 
   const verify = async () => {
     if (code.trim().length < 4) {
-      Alert.alert("Código", "Introduce un código válido.");
+      showAlert("Código", "Introduce un código válido.");
       return;
     }
 
@@ -2034,7 +2605,7 @@ function VerifyEmailOnlyScreen() {
     try {
       await auth.verifyEmail(email, code.trim());
     } catch (error) {
-      Alert.alert("Verificación", parseApiError(error));
+      showAlert("Verificación", parseApiError(error));
     } finally {
       setLoading(false);
     }
@@ -2045,9 +2616,9 @@ function VerifyEmailOnlyScreen() {
     try {
       await auth.resendCode(email);
       setCooldown(60);
-      Alert.alert("Código enviado", "Revisa tu email o el log del backend en modo dev.");
+      showAlert("Código enviado", "Revisa tu email o el log del backend en modo dev.");
     } catch (error) {
-      Alert.alert("Reenviar", parseApiError(error));
+      showAlert("Reenviar", parseApiError(error));
     } finally {
       setResending(false);
     }
@@ -2057,7 +2628,7 @@ function VerifyEmailOnlyScreen() {
     <SafeAreaView style={styles.screen}>
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.flex1}>
         <ScrollView contentContainerStyle={styles.authScroll} keyboardShouldPersistTaps="handled">
-          <AppHeader title="Verificar email" subtitle={`Código OTP de 6 dígitos para ${email}`} />
+          <AppHeader title="Verificar email" subtitle={tx("Código OTP de 6 dígitos para {{email}}", { email })} />
 
           <InputField
             label="Código"
@@ -2072,7 +2643,7 @@ function VerifyEmailOnlyScreen() {
 
           <PrimaryButton title="Verificar" onPress={verify} loading={loading} />
           <SecondaryButton
-            title={cooldown > 0 ? `Reenviar en ${cooldown}s` : "Reenviar código"}
+            title={cooldown > 0 ? tx("Reenviar en {{cooldown}}s", { cooldown }) : "Reenviar código"}
             onPress={resend}
             disabled={cooldown > 0 || resending}
           />
@@ -2138,8 +2709,6 @@ function OnboardingWizard() {
 
   const [weight, setWeight] = useState(auth.profile?.weight_kg ? String(auth.profile.weight_kg) : "");
   const [height, setHeight] = useState(auth.profile?.height_cm ? String(auth.profile.height_cm) : "");
-  const [age, setAge] = useState(auth.profile?.age ? String(auth.profile.age) : "");
-  const [sex, setSex] = useState<Sex>(auth.profile?.sex ?? "other");
   const [activityLevel, setActivityLevel] = useState<ActivityLevel>(auth.profile?.activity_level ?? "moderate");
   const [goalType, setGoalType] = useState<GoalType>(auth.profile?.goal_type ?? "maintain");
 
@@ -2160,13 +2729,16 @@ function OnboardingWizard() {
   const [goalFeedback, setGoalFeedback] = useState<GoalFeedback | null>(null);
 
   const today = useMemo(() => formatDateLocal(new Date()), []);
+  const lockedSex: Sex = auth.user?.sex ?? auth.profile?.sex ?? "other";
+  const lockedBirthDate = auth.user?.birth_date ?? null;
+  const lockedAge = ageFromBirthDateString(lockedBirthDate);
 
   const numericWeight = toPositiveNumberOrNull(weight);
   const numericHeight = toPositiveNumberOrNull(height);
   const currentBmi = bmiValue(numericWeight, numericHeight);
 
   const draftBodyFat = estimateBodyFatPreview({
-    sex,
+    sex: lockedSex,
     heightCm: numericHeight,
     waistCm: toOptionalNumber(waist),
     neckCm: toOptionalNumber(neck),
@@ -2181,16 +2753,11 @@ function OnboardingWizard() {
         return null;
       }
 
-      const optionalAge = age.trim() ? Number(age.trim()) : null;
-      if (optionalAge !== null && (!Number.isFinite(optionalAge) || optionalAge < 13 || optionalAge > 120)) {
-        return null;
-      }
-
       return {
         weight_kg: payloadWeight,
         height_cm: payloadHeight,
-        age: optionalAge,
-        sex,
+        age: lockedAge,
+        sex: lockedSex,
         activity_level: activityLevel,
         goal_type: goalType,
         weekly_weight_goal_kg: null,
@@ -2202,13 +2769,13 @@ function OnboardingWizard() {
         thigh_cm: clearOptionalMeasures ? null : toOptionalNumber(thigh),
       };
     },
-    [activityLevel, age, arm, chest, goalType, height, hip, neck, sex, thigh, waist, weight],
+    [activityLevel, arm, chest, goalType, height, hip, lockedAge, lockedSex, neck, thigh, waist, weight],
   );
 
   const goToStepThree = async (skipMeasures: boolean) => {
     const profilePayload = buildProfilePayload(skipMeasures);
     if (!profilePayload) {
-      Alert.alert("Perfil", "Revisa los datos básicos y la edad opcional.");
+      showAlert("Perfil", "Revisa los datos básicos.");
       return;
     }
 
@@ -2239,7 +2806,7 @@ function OnboardingWizard() {
 
       setStep(3);
     } catch (error) {
-      Alert.alert("Onboarding", parseApiError(error));
+      showAlert("Onboarding", parseApiError(error));
     } finally {
       setSaving(false);
     }
@@ -2254,7 +2821,7 @@ function OnboardingWizard() {
     };
 
     if (!Number.isFinite(payload.kcal_goal) || payload.kcal_goal <= 0) {
-      Alert.alert("Objetivo", "Kcal inválidas.");
+      showAlert("Objetivo", "Kcal inválidas.");
       return;
     }
 
@@ -2264,7 +2831,7 @@ function OnboardingWizard() {
       setGoalFeedback(response.feedback);
       await auth.refreshMe();
     } catch (error) {
-      Alert.alert("Objetivo", parseApiError(error));
+      showAlert("Objetivo", parseApiError(error));
     } finally {
       setSaving(false);
     }
@@ -2274,25 +2841,16 @@ function OnboardingWizard() {
     <SafeAreaView style={styles.screen}>
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.flex1}>
         <ScrollView contentContainerStyle={styles.authScroll} keyboardShouldPersistTaps="handled">
-          <AppHeader title="Onboarding" subtitle={`Paso ${step} de 3`} />
+          <AppHeader title="Onboarding" subtitle={tx("Paso {{step}} de 3", { step })} />
 
           {step === 1 ? (
             <View style={styles.sectionCard}>
               <Text style={styles.sectionTitle}>Paso 1: datos básicos</Text>
               <InputField label="Peso (kg)" value={weight} onChangeText={setWeight} keyboardType="numeric" />
               <InputField label="Altura (cm)" value={height} onChangeText={setHeight} keyboardType="numeric" />
-              <InputField label="Edad (opcional)" value={age} onChangeText={setAge} keyboardType="numeric" />
-
-              <ChoiceRow
-                label="Sexo"
-                value={sex}
-                onChange={setSex}
-                options={[
-                  { label: "Masculino", value: "male" },
-                  { label: "Femenino", value: "female" },
-                  { label: "Otro", value: "other" },
-                ]}
-              />
+              <ReadOnlyField label="Fecha de nacimiento" value={lockedBirthDate ?? "No disponible"} />
+              <ReadOnlyField label="Edad" value={lockedAge !== null ? String(lockedAge) : "No disponible"} />
+              <ReadOnlyField label="Sexo" value={lockedSex} />
 
               <ChoiceRow
                 label="Actividad"
@@ -2506,6 +3064,93 @@ function MacroDonut({ segments, title }: { segments: Segment[]; title: string })
   );
 }
 
+function AddQuantityMacroSummary(props: { kcal: number; protein: number; carbs: number; fats: number }) {
+  const size = 126;
+  const stroke = 11;
+  const radius = (size - stroke) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const segments: Segment[] = [
+    { label: "Carbohidratos", value: Math.max(props.carbs, 0), color: theme.carbs },
+    { label: "Grasas", value: Math.max(props.fats, 0), color: theme.fats },
+    { label: "Proteínas", value: Math.max(props.protein, 0), color: theme.kcal },
+  ];
+  const total = Math.max(segments.reduce((acc, item) => acc + item.value, 0), 0.0001);
+  let offset = 0;
+
+  return (
+    <View style={styles.addMacroSummaryWrap}>
+      <View style={styles.addMacroRingWrap}>
+        <Svg width={size} height={size}>
+          <G rotation={-90} origin={`${size / 2}, ${size / 2}`}>
+            <Circle
+              cx={size / 2}
+              cy={size / 2}
+              r={radius}
+              stroke={theme.border}
+              strokeWidth={stroke}
+              fill="transparent"
+            />
+            {segments.map((segment) => {
+              const ratio = segment.value / total;
+              const length = ratio * circumference;
+              const circle = (
+                <Circle
+                  key={segment.label}
+                  cx={size / 2}
+                  cy={size / 2}
+                  r={radius}
+                  stroke={segment.color}
+                  strokeWidth={stroke}
+                  fill="transparent"
+                  strokeDasharray={`${length} ${circumference - length}`}
+                  strokeDashoffset={-offset}
+                />
+              );
+              offset += length;
+              return circle;
+            })}
+          </G>
+        </Svg>
+        <View style={styles.addMacroRingCenter}>
+          <Text style={styles.addMacroRingValue}>{Math.round(props.kcal)}</Text>
+          <Text style={styles.addMacroRingUnit}>kcal</Text>
+        </View>
+      </View>
+
+      <View style={styles.addMacroMetricsWrap}>
+        {segments.map((segment) => {
+          const pct = Math.round((segment.value / total) * 100);
+          return (
+            <View key={segment.label} style={styles.addMacroMetricItem}>
+              <Text style={[styles.addMacroMetricPercent, { color: segment.color }]}>{pct}%</Text>
+              <Text style={styles.addMacroMetricValue}>{(Math.round(segment.value * 10) / 10).toString().replace(".", ",")} g</Text>
+              <Text style={styles.addMacroMetricLabel}>{segment.label}</Text>
+            </View>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
+function mealPrecisionMeta(
+  confidenceLevel: MealPhotoEstimateResponse["confidence_level"],
+  language: "es" | "en" = "es",
+): {
+  percent: number;
+  label: string;
+  tone: "accent" | "warning" | "danger";
+  color: string;
+} {
+  if (confidenceLevel === "high") {
+    return { percent: 86, label: language === "en" ? "High" : "Alta", tone: "accent", color: theme.ok };
+  }
+  if (confidenceLevel === "medium") {
+    return { percent: 66, label: language === "en" ? "Medium" : "Media", tone: "warning", color: theme.warning };
+  }
+  return { percent: 44, label: language === "en" ? "Low" : "Baja", tone: "danger", color: theme.danger };
+}
+
 function DashboardScreen({
   onOpenBodyProgress,
 }: {
@@ -2526,11 +3171,11 @@ function DashboardScreen({
       const data = await auth.fetchDaySummary(selectedDate);
       setSummary(data);
     } catch (error) {
-      Alert.alert("Dashboard", parseApiError(error));
+      showAlert("Dashboard", parseApiError(error));
     } finally {
       setLoadingSummary(false);
     }
-  }, [auth, selectedDate]);
+  }, [auth.fetchDaySummary, selectedDate]);
 
   useEffect(() => {
     void loadSummary();
@@ -2586,11 +3231,12 @@ function DashboardScreen({
   const now = useMemo(() => new Date(), []);
   const hour = now.getHours();
   const greeting = hour < 12 ? "Buenos días" : hour < 19 ? "Buenas tardes" : "Buenas noches";
-  const emailPrefix = auth.user?.email?.split("@")[0] ?? "Usuario";
-  const displayName = emailPrefix.charAt(0).toUpperCase() + emailPrefix.slice(1);
+  const username = auth.user?.username?.trim() || auth.user?.email?.split("@")[0] || "Usuario";
+  const displayName = username.charAt(0).toUpperCase() + username.slice(1);
 
   const goal = summary?.goal;
   const consumed = summary?.consumed;
+  const showDashboardSkeleton = loadingSummary && !summary;
   const kcalGoal = goal?.kcal_goal ?? 0;
   const kcalConsumed = consumed?.kcal ?? 0;
   const kcalRemaining = Math.round((kcalGoal || 0) - kcalConsumed);
@@ -2605,7 +3251,7 @@ function DashboardScreen({
 
     const proteinRemaining = goal.protein_goal - summary.consumed.protein_g;
     if (proteinRemaining > 0) {
-      notes.push(`Te faltan ${Math.round(proteinRemaining)} g de proteína para tu objetivo.`);
+      notes.push(tx("Te faltan {{proteinRemaining}} g de proteína para tu objetivo.", { proteinRemaining: Math.round(proteinRemaining) }));
     }
     if (summary.consumed.kcal > goal.kcal_goal * 1.15) {
       notes.push("Hoy vas alto en kcal (+15% sobre objetivo). Ajusta la siguiente comida.");
@@ -2639,7 +3285,7 @@ function DashboardScreen({
   });
 
   const confirmDeleteIntake = (intakeId: number) => {
-    Alert.alert("Eliminar consumo", "Este registro se borrará del día actual.", [
+    showAlert("Eliminar consumo", "Este registro se borrará del día actual.", [
       { text: "Cancelar", style: "cancel" },
       {
         text: "Eliminar",
@@ -2650,7 +3296,7 @@ function DashboardScreen({
               await auth.deleteIntake(intakeId);
               await loadSummary();
             } catch (error) {
-              Alert.alert("Eliminar consumo", parseApiError(error));
+              showAlert("Eliminar consumo", parseApiError(error));
             }
           })();
         },
@@ -2680,6 +3326,32 @@ function DashboardScreen({
           </Pressable>
         </View>
 
+        {showDashboardSkeleton ? (
+          <>
+            <AppCard>
+              <View style={styles.skeletonLineLg} />
+              <View style={styles.skeletonLineMd} />
+              <View style={styles.skeletonBlockTall} />
+            </AppCard>
+            <AppCard>
+              <View style={styles.skeletonLineMd} />
+              <View style={styles.skeletonRow}>
+                <View style={styles.skeletonRing} />
+                <View style={styles.skeletonRing} />
+                <View style={styles.skeletonRing} />
+              </View>
+            </AppCard>
+            <AppCard>
+              <View style={styles.skeletonLineMd} />
+              <View style={styles.skeletonLineSm} />
+              <View style={styles.skeletonLineSm} />
+              <View style={styles.skeletonLineSm} />
+            </AppCard>
+          </>
+        ) : null}
+
+        {!showDashboardSkeleton ? (
+          <>
         <AppCard style={[styles.heroCard, exceededKcal && styles.heroCardExceeded]}>
           <SectionHeader title="Resumen del día" subtitle="Kcal restantes" />
           <Text style={styles.heroRemainingValue}>{kcalGoal > 0 ? kcalRemaining : "-"}</Text>
@@ -2697,7 +3369,11 @@ function DashboardScreen({
           <View style={styles.heroPillsRow}>
             <TagChip label={exceededKcal ? "Sobre objetivo" : "En rango"} tone={exceededKcal ? "danger" : "accent"} />
             <TagChip
-              label={`${summary?.intakes.length ?? 0} registro${(summary?.intakes.length ?? 0) === 1 ? "" : "s"}`}
+              label={
+                (summary?.intakes.length ?? 0) === 1
+                  ? tx("{{count}} registro", { count: summary?.intakes.length ?? 0 })
+                  : tx("{{count}} registros", { count: summary?.intakes.length ?? 0 })
+              }
               tone={summary?.intakes.length ? "default" : "warning"}
             />
           </View>
@@ -2710,7 +3386,7 @@ function DashboardScreen({
               style={[styles.macroToggleChip, macroViewMode === "rings" && styles.macroToggleChipActive]}
               onPress={() => setMacroViewMode("rings")}
             >
-              <Text style={[styles.macroToggleText, macroViewMode === "rings" && styles.macroToggleTextActive]}>Rings</Text>
+              <Text style={[styles.macroToggleText, macroViewMode === "rings" && styles.macroToggleTextActive]}>Aros</Text>
             </Pressable>
             <Pressable
               style={[styles.macroToggleChip, macroViewMode === "bars" && styles.macroToggleChipActive]}
@@ -2808,7 +3484,7 @@ function DashboardScreen({
         </AppCard>
 
         <AppCard>
-          <SectionHeader title="Intakes de hoy" subtitle="Línea temporal" actionLabel="Recargar" onAction={() => void loadSummary()} />
+          <SectionHeader title="Consumos de hoy" subtitle="Línea temporal" actionLabel="Recargar" onAction={() => void loadSummary()} />
           {loadingSummary ? <ActivityIndicator color={theme.accent} /> : null}
 
           {!loadingSummary && summary && summary.intakes.length === 0 ? (
@@ -2816,39 +3492,61 @@ function DashboardScreen({
           ) : null}
 
           {!loadingSummary && summary
-            ? summary.intakes.map((item) => (
-                <View key={item.id} style={styles.intakeRow}>
-                  <View style={styles.intakeTimeDotWrap}>
-                    <View style={styles.intakeTimeDot} />
-                    <Text style={styles.intakeMeta}>{new Date(item.created_at).toLocaleTimeString()}</Text>
+            ? summary.intakes.map((item) => {
+                const rawName = item.product_name ?? "Producto";
+                const displayName = normalizeDisplayProductName(rawName);
+                const isAiEstimated =
+                  item.estimated === true ||
+                  item.source_method === "meal_photo" ||
+                  item.source_method === "photo_estimate" ||
+                  /^estimado:\s*/i.test(rawName) ||
+                  /^estimaci[oó]n:\s*/i.test(rawName);
+
+                return (
+                  <View key={item.id} style={styles.intakeRow}>
+                    <View style={styles.intakeTimeDotWrap}>
+                      <View style={styles.intakeTimeDot} />
+                      <Text style={styles.intakeMeta}>{new Date(item.created_at).toLocaleTimeString()}</Text>
+                    </View>
+                    <View style={styles.intakeMain}>
+                      <View style={styles.intakeNameRow}>
+                        <Text style={styles.intakeName} numberOfLines={1} ellipsizeMode="tail">
+                          {displayName}
+                        </Text>
+                        {isAiEstimated ? (
+                          <View style={styles.intakeAIBadge}>
+                            <Text style={styles.intakeAIBadgeText}>IA</Text>
+                          </View>
+                        ) : null}
+                      </View>
+                      <Text style={styles.intakeMeta}>
+                        {Math.round(item.quantity_g ?? 0)} g | P {Math.round(item.nutrients.protein_g)} / C{" "}
+                        {Math.round(item.nutrients.carbs_g)} / G {Math.round(item.nutrients.fat_g)}
+                      </Text>
+                    </View>
+                    <View style={styles.intakeRight}>
+                      <Text style={styles.intakeKcal}>{Math.round(item.nutrients.kcal)} kcal</Text>
+                      <Pressable onPress={() => confirmDeleteIntake(item.id)} style={styles.intakeDeleteBtn}>
+                        <Text style={styles.intakeDeleteText}>Eliminar</Text>
+                      </Pressable>
+                    </View>
                   </View>
-                  <View style={styles.intakeMain}>
-                    <Text style={styles.intakeName}>{item.product_name ?? "Producto"}</Text>
-                    <Text style={styles.intakeMeta}>
-                      {Math.round(item.quantity_g ?? 0)} g | P {Math.round(item.nutrients.protein_g)} / C{" "}
-                      {Math.round(item.nutrients.carbs_g)} / G {Math.round(item.nutrients.fat_g)}
-                    </Text>
-                  </View>
-                  <View style={styles.intakeRight}>
-                    <Text style={styles.intakeKcal}>{Math.round(item.nutrients.kcal)} kcal</Text>
-                    <Pressable onPress={() => confirmDeleteIntake(item.id)} style={styles.intakeDeleteBtn}>
-                      <Text style={styles.intakeDeleteText}>Eliminar</Text>
-                    </Pressable>
-                  </View>
-                </View>
-              ))
+                );
+              })
             : null}
         </AppCard>
 
         <AppCard>
-          <SectionHeader title="Insights rápidos" subtitle="Recomendaciones prácticas" />
+          <SectionHeader title="Consejos rápidos" subtitle="Recomendaciones prácticas" />
           {quickInsights.map((insight) => (
             <View key={insight} style={styles.insightRow}>
               <View style={styles.insightDot} />
-              <Text style={styles.helperText}>{insight}</Text>
-            </View>
+            <Text style={styles.helperText}>{insight}</Text>
+          </View>
           ))}
         </AppCard>
+          </>
+        ) : null}
         </ScrollView>
       </SafeAreaView>
       {accountMenuVisible ? (
@@ -2867,6 +3565,7 @@ function DashboardScreen({
           >
             <Pressable style={styles.accountMenuCard} onPress={() => {}}>
               <Text style={styles.accountMenuTitle}>Mi cuenta</Text>
+              <StatRow label="Usuario" value={auth.user?.username ?? "-"} />
               <StatRow label="Email" value={auth.user?.email ?? "-"} />
               <StatRow label="Email verificado" value={auth.user?.email_verified ? "Sí" : "No"} />
               <StatRow label="Onboarding" value={auth.user?.onboarding_completed ? "Completado" : "Pendiente"} />
@@ -2892,7 +3591,12 @@ function BodyProgressScreen() {
   const [savingWeight, setSavingWeight] = useState(false);
   const [savingMeasure, setSavingMeasure] = useState(false);
   const [range, setRange] = useState<"7d" | "30d" | "90d">("30d");
-  const [showQuickWeightForm, setShowQuickWeightForm] = useState(true);
+  const [bodyActionMenuOpen, setBodyActionMenuOpen] = useState(false);
+  const [bodyActionMenuVisible, setBodyActionMenuVisible] = useState(false);
+  const bodyActionMenuAnim = useRef(new Animated.Value(0)).current;
+  const [bodyFormModalType, setBodyFormModalType] = useState<"weight" | "measure" | null>(null);
+  const [bodyFormModalVisible, setBodyFormModalVisible] = useState(false);
+  const bodyFormModalAnim = useRef(new Animated.Value(0)).current;
 
   const [summary, setSummary] = useState<BodySummary | null>(null);
   const [weightLogs, setWeightLogs] = useState<BodyWeightLog[]>([]);
@@ -2916,11 +3620,11 @@ function BodyProgressScreen() {
       setWeightLogs(nextWeights);
       setMeasurementLogs(nextMeasurements);
     } catch (error) {
-      Alert.alert("Progreso corporal", parseApiError(error));
+      showAlert("Progreso corporal", parseApiError(error));
     } finally {
       setLoading(false);
     }
-  }, [auth]);
+  }, [auth.fetchBodySummary, auth.fetchMeasurementLogs, auth.fetchWeightLogs]);
 
   useEffect(() => {
     void reload();
@@ -2979,17 +3683,20 @@ function BodyProgressScreen() {
   const saveWeight = async () => {
     const value = toPositiveNumberOrNull(weightInput);
     if (!value) {
-      Alert.alert("Peso", "Introduce un peso válido.");
+      showAlert("Peso", "Introduce un peso válido.");
       return;
     }
     setSavingWeight(true);
     try {
-      await auth.createWeightLog({ weight_kg: value, note: weightNote.trim() || undefined });
+      const created = await auth.createWeightLog({ weight_kg: value, note: weightNote.trim() || undefined });
+      setWeightLogs((current) => [created, ...current.filter((row) => row.id !== created.id)]);
+      const nextSummary = await auth.fetchBodySummary();
+      setSummary(nextSummary);
       setWeightInput("");
       setWeightNote("");
-      await reload();
+      closeBodyFormModal();
     } catch (error) {
-      Alert.alert("Peso", parseApiError(error));
+      showAlert("Peso", parseApiError(error));
     } finally {
       setSavingWeight(false);
     }
@@ -3002,22 +3709,119 @@ function BodyProgressScreen() {
       hip_cm: toOptionalNumber(hipInput) ?? undefined,
     };
     if (!payload.waist_cm && !payload.neck_cm && !payload.hip_cm) {
-      Alert.alert("Medidas", "Añade al menos una medida.");
+      showAlert("Medidas", "Añade al menos una medida.");
       return;
     }
     setSavingMeasure(true);
     try {
-      await auth.createMeasurementLog(payload);
+      const created = await auth.createMeasurementLog(payload);
+      setMeasurementLogs((current) => [created, ...current.filter((row) => row.id !== created.id)]);
+      const nextSummary = await auth.fetchBodySummary();
+      setSummary(nextSummary);
       setWaistInput("");
       setNeckInput("");
       setHipInput("");
-      await reload();
+      closeBodyFormModal();
     } catch (error) {
-      Alert.alert("Medidas", parseApiError(error));
+      showAlert("Medidas", parseApiError(error));
     } finally {
       setSavingMeasure(false);
     }
   };
+
+  const openBodyActionMenu = useCallback(() => {
+    if (bodyActionMenuOpen) {
+      return;
+    }
+    setBodyActionMenuVisible(true);
+    setBodyActionMenuOpen(true);
+    bodyActionMenuAnim.stopAnimation();
+    Animated.spring(bodyActionMenuAnim, {
+      toValue: 1,
+      damping: 22,
+      stiffness: 240,
+      mass: 0.95,
+      useNativeDriver: true,
+    }).start();
+  }, [bodyActionMenuAnim, bodyActionMenuOpen]);
+
+  const closeBodyActionMenu = useCallback(
+    (onClosed?: () => void) => {
+      if (!bodyActionMenuVisible) {
+        onClosed?.();
+        return;
+      }
+      setBodyActionMenuOpen(false);
+      bodyActionMenuAnim.stopAnimation();
+      Animated.timing(bodyActionMenuAnim, {
+        toValue: 0,
+        duration: 220,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }).start(({ finished }) => {
+        if (finished) {
+          setBodyActionMenuVisible(false);
+        }
+        onClosed?.();
+      });
+    },
+    [bodyActionMenuAnim, bodyActionMenuVisible],
+  );
+
+  const toggleBodyActionMenu = useCallback(() => {
+    if (bodyActionMenuOpen) {
+      closeBodyActionMenu();
+      return;
+    }
+    openBodyActionMenu();
+  }, [bodyActionMenuOpen, closeBodyActionMenu, openBodyActionMenu]);
+
+  const openBodyFormModal = useCallback(
+    (type: "weight" | "measure") => {
+      setBodyFormModalType(type);
+      setBodyFormModalVisible(true);
+      bodyFormModalAnim.stopAnimation();
+      Animated.spring(bodyFormModalAnim, {
+        toValue: 1,
+        damping: 20,
+        stiffness: 230,
+        mass: 0.95,
+        useNativeDriver: true,
+      }).start();
+    },
+    [bodyFormModalAnim],
+  );
+
+  const closeBodyFormModal = useCallback(
+    (onClosed?: () => void) => {
+      if (!bodyFormModalVisible) {
+        onClosed?.();
+        return;
+      }
+      bodyFormModalAnim.stopAnimation();
+      Animated.timing(bodyFormModalAnim, {
+        toValue: 0,
+        duration: 190,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }).start(({ finished }) => {
+        if (finished) {
+          setBodyFormModalVisible(false);
+          setBodyFormModalType(null);
+        }
+        onClosed?.();
+      });
+    },
+    [bodyFormModalAnim, bodyFormModalVisible],
+  );
+
+  const showWeightFormFromMenu = useCallback(() => {
+    closeBodyActionMenu(() => openBodyFormModal("weight"));
+  }, [closeBodyActionMenu, openBodyFormModal]);
+
+  const showMeasureFormFromMenu = useCallback(() => {
+    closeBodyActionMenu(() => openBodyFormModal("measure"));
+  }, [closeBodyActionMenu, openBodyFormModal]);
 
   const bmiCategoryLabel = summary?.bmi_category ?? "unknown";
   const bmiCategoryColor = (() => {
@@ -3039,45 +3843,80 @@ function BodyProgressScreen() {
 
   const recentWeights = useMemo(() => weightLogs.slice(0, 6), [weightLogs]);
   const recentMeasurements = useMemo(() => measurementLogs.slice(0, 4), [measurementLogs]);
+  const showBodySkeleton = loading && !summary && weightLogs.length === 0 && measurementLogs.length === 0;
+  const bodyActionMenuTranslateY = bodyActionMenuAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [-14, 0],
+  });
+  const bodyActionMenuScale = bodyActionMenuAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.96, 1],
+  });
+  const bodyActionMenuBackdropOpacity = bodyActionMenuAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, 1],
+  });
+  const bodyFormModalTranslateY = bodyFormModalAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [22, 0],
+  });
+  const bodyFormModalScale = bodyFormModalAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.96, 1],
+  });
+  const bodyFormModalBackdropOpacity = bodyFormModalAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, 1],
+  });
 
-  return (
-    <SafeAreaView style={styles.screen}>
-      <ScrollView contentContainerStyle={styles.mainScroll}>
-        <View style={styles.bodyPageHeader}>
-          <View style={styles.bodyPageHeaderCopy}>
-            <Text style={styles.bodyPageTitle}>Body</Text>
-            <Text style={styles.bodyPageSubtitle}>Composición corporal, tendencia y métricas clave.</Text>
-          </View>
-          <Pressable
-            onPress={() => setShowQuickWeightForm((current) => !current)}
-            style={styles.bodyHeaderActionBtn}
-          >
-            <Text style={styles.bodyHeaderActionText}>Registrar peso</Text>
-          </Pressable>
-        </View>
-
-        {showQuickWeightForm ? (
-          <AppCard>
-            <SectionHeader title="Registro rápido de peso" subtitle="Añade hoy en un toque" />
-            <View style={styles.bodyQuickWeightRow}>
-              <View style={styles.bodyQuickWeightInputWrap}>
-                <InputField
-                  label="Peso (kg)"
-                  value={weightInput}
-                  onChangeText={setWeightInput}
-                  keyboardType="numeric"
-                />
-              </View>
-              <View style={styles.bodyQuickWeightInputWrap}>
-                <InputField label="Nota (opcional)" value={weightNote} onChangeText={setWeightNote} />
-              </View>
+  if (showBodySkeleton) {
+    return (
+      <SafeAreaView style={styles.screen}>
+        <ScrollView contentContainerStyle={styles.mainScroll}>
+          <View style={styles.bodyPageHeader}>
+            <View style={styles.bodyPageHeaderCopy}>
+              <Text style={styles.bodyPageTitle}>Cuerpo</Text>
+              <Text style={styles.bodyPageSubtitle}>Composición corporal, tendencia y métricas clave.</Text>
             </View>
-            <View style={styles.bodyQuickWeightActions}>
-              <PrimaryButton title="Guardar peso" onPress={() => void saveWeight()} loading={savingWeight} />
-              <SecondaryButton title="Ocultar" onPress={() => setShowQuickWeightForm(false)} />
+            <View style={styles.bodyHeaderActionBtn}>
+              <Text style={styles.bodyHeaderActionText}>...</Text>
+            </View>
+          </View>
+          <AppCard>
+            <View style={styles.skeletonLineLg} />
+            <View style={styles.skeletonRow}>
+              <View style={styles.skeletonTile} />
+              <View style={styles.skeletonTile} />
             </View>
           </AppCard>
-        ) : null}
+          <AppCard>
+            <View style={styles.skeletonLineMd} />
+            <View style={styles.skeletonBlockTall} />
+          </AppCard>
+          <AppCard>
+            <View style={styles.skeletonLineMd} />
+            <View style={styles.skeletonLineSm} />
+            <View style={styles.skeletonLineSm} />
+            <View style={styles.skeletonLineSm} />
+          </AppCard>
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
+
+  return (
+    <>
+      <SafeAreaView style={styles.screen}>
+        <ScrollView contentContainerStyle={styles.mainScroll}>
+        <View style={styles.bodyPageHeader}>
+          <View style={styles.bodyPageHeaderCopy}>
+            <Text style={styles.bodyPageTitle}>Cuerpo</Text>
+            <Text style={styles.bodyPageSubtitle}>Composición corporal, tendencia y métricas clave.</Text>
+          </View>
+          <Pressable onPress={toggleBodyActionMenu} style={styles.bodyHeaderActionBtn}>
+            <Text style={styles.bodyHeaderActionText}>Registrar</Text>
+          </Pressable>
+        </View>
 
         <AppCard>
           <SectionHeader
@@ -3134,10 +3973,10 @@ function BodyProgressScreen() {
           />
           <View style={styles.bodyLegendRow}>
             {[
-              ["Underweight", "#8ba3c7"],
+              ["Bajo peso", "#8ba3c7"],
               ["Normal", "#7bb8ad"],
-              ["Overweight", "#ccb086"],
-              ["Obesity", "#c89a9a"],
+              ["Sobrepeso", "#ccb086"],
+              ["Obesidad", "#c89a9a"],
             ].map(([label, color]) => (
               <View key={label} style={styles.bodyLegendItem}>
                 <View style={[styles.bodyLegendSwatch, { backgroundColor: color }]} />
@@ -3238,16 +4077,7 @@ function BodyProgressScreen() {
         </AppCard>
 
         <AppCard>
-          <SectionHeader title="Registrar medidas" subtitle="Opcional para mejorar estimación de % grasa" />
-          <InputField label="Cintura (cm)" value={waistInput} onChangeText={setWaistInput} keyboardType="numeric" />
-          <InputField label="Cuello (cm)" value={neckInput} onChangeText={setNeckInput} keyboardType="numeric" />
-          <InputField label="Cadera (cm)" value={hipInput} onChangeText={setHipInput} keyboardType="numeric" />
-          <PrimaryButton title="Guardar medidas" onPress={() => void saveMeasurement()} loading={savingMeasure} />
-          <Text style={styles.helperText}>Registros de medidas acumulados: {measurementLogs.length}</Text>
-        </AppCard>
-
-        <AppCard>
-          <SectionHeader title="Coach hints" subtitle="Reglas simples basadas en tu día" />
+          <SectionHeader title="Consejos" subtitle="Reglas simples basadas en tu día" />
           {(summary?.hints ?? []).length === 0 ? (
             <EmptyState title="Sin alertas" subtitle="Tus métricas actuales no generan avisos." />
           ) : (
@@ -3259,117 +4089,167 @@ function BodyProgressScreen() {
             ))
           )}
         </AppCard>
-      </ScrollView>
-    </SafeAreaView>
+        </ScrollView>
+      </SafeAreaView>
+      {bodyFormModalVisible ? (
+        <View style={styles.bodyFormModalLayer} pointerEvents="box-none">
+          <Pressable style={styles.bodyFormModalBackdrop} onPress={() => closeBodyFormModal()}>
+            <Animated.View style={[styles.bodyFormModalScrim, { opacity: bodyFormModalBackdropOpacity }]} />
+          </Pressable>
+          <Animated.View
+            style={[
+              styles.bodyFormModalContainer,
+              {
+                opacity: bodyFormModalAnim,
+                transform: [{ translateY: bodyFormModalTranslateY }, { scale: bodyFormModalScale }],
+              },
+            ]}
+          >
+            <Pressable style={styles.bodyFormModalCard} onPress={() => {}}>
+              {bodyFormModalType === "weight" ? (
+                <>
+                  <SectionHeader title="Registrar peso" subtitle="Añade hoy en un toque" />
+                  <View style={styles.bodyQuickWeightRow}>
+                    <View style={styles.bodyQuickWeightInputWrap}>
+                      <InputField
+                        label="Peso (kg)"
+                        value={weightInput}
+                        onChangeText={setWeightInput}
+                        keyboardType="numeric"
+                      />
+                    </View>
+                    <View style={styles.bodyQuickWeightInputWrap}>
+                      <InputField label="Nota (opcional)" value={weightNote} onChangeText={setWeightNote} />
+                    </View>
+                  </View>
+                  <View style={styles.bodyQuickWeightActions}>
+                    <PrimaryButton title="Guardar peso" onPress={() => void saveWeight()} loading={savingWeight} />
+                    <SecondaryButton title="Cerrar" onPress={() => closeBodyFormModal()} />
+                  </View>
+                </>
+              ) : null}
+              {bodyFormModalType === "measure" ? (
+                <>
+                  <SectionHeader title="Registrar medidas" subtitle="Opcional para mejorar estimación de % grasa" />
+                  <InputField label="Cintura (cm)" value={waistInput} onChangeText={setWaistInput} keyboardType="numeric" />
+                  <InputField label="Cuello (cm)" value={neckInput} onChangeText={setNeckInput} keyboardType="numeric" />
+                  <InputField label="Cadera (cm)" value={hipInput} onChangeText={setHipInput} keyboardType="numeric" />
+                  <PrimaryButton title="Guardar medidas" onPress={() => void saveMeasurement()} loading={savingMeasure} />
+                  <SecondaryButton title="Cerrar" onPress={() => closeBodyFormModal()} />
+                  <Text style={styles.helperText}>Registros de medidas acumulados: {measurementLogs.length}</Text>
+                </>
+              ) : null}
+            </Pressable>
+          </Animated.View>
+        </View>
+      ) : null}
+      {bodyActionMenuVisible ? (
+        <View style={styles.accountMenuLayer} pointerEvents="box-none">
+          <Pressable style={styles.accountMenuBackdrop} onPress={() => closeBodyActionMenu()}>
+            <Animated.View style={[styles.accountMenuScrim, { opacity: bodyActionMenuBackdropOpacity }]} />
+          </Pressable>
+          <Animated.View
+            style={[
+              styles.accountMenuContainer,
+              {
+                opacity: bodyActionMenuAnim,
+                transform: [{ translateY: bodyActionMenuTranslateY }, { scale: bodyActionMenuScale }],
+              },
+            ]}
+          >
+            <Pressable style={styles.accountMenuCard} onPress={() => {}}>
+              <Text style={styles.accountMenuTitle}>Registrar</Text>
+              <SecondaryButton title="Registrar peso" onPress={showWeightFormFromMenu} />
+              <SecondaryButton title="Registrar medidas" onPress={showMeasureFormFromMenu} />
+            </Pressable>
+          </Animated.View>
+        </View>
+      ) : null}
+    </>
   );
 }
 
 function HistoryScreen() {
   const auth = useAuth();
+  const { language } = useI18n();
+  const locale = language === "en" ? "en-US" : "es-ES";
   const todayIso = useMemo(() => formatDateLocal(new Date()), []);
   const [monthKey, setMonthKey] = useState(formatMonth(new Date()));
   const [selectedDay, setSelectedDay] = useState<string | null>(todayIso);
   const [days, setDays] = useState<CalendarDayEntry[]>([]);
   const [dayDetailMap, setDayDetailMap] = useState<Record<string, DaySummary>>({});
   const [weightDateMap, setWeightDateMap] = useState<Record<string, number>>({});
-  const [weeklyStats, setWeeklyStats] = useState<{
-    avgKcal: number;
-    avgProtein: number;
-    adherenceProteinPct: number;
-    streakDays: number;
-  } | null>(null);
   const [loading, setLoading] = useState(false);
-
-  const computeWeeklyStats = useCallback(async () => {
-    const today = new Date();
-    const rows: DaySummary[] = [];
-
-    for (let i = 0; i < 30; i += 1) {
-      const day = new Date(today);
-      day.setDate(today.getDate() - i);
-      const iso = formatDateLocal(day);
-      try {
-        const summary = await auth.fetchDaySummary(iso);
-        rows.push(summary);
-      } catch {
-        // Keep stats resilient for missing data.
-      }
-    }
-
-    if (rows.length === 0) {
-      setWeeklyStats(null);
-      return;
-    }
-
-    const statsRows = rows.slice(0, 7);
-    const avgKcal = statsRows.reduce((acc, row) => acc + row.consumed.kcal, 0) / Math.max(statsRows.length, 1);
-    const avgProtein = statsRows.reduce((acc, row) => acc + row.consumed.protein_g, 0) / Math.max(statsRows.length, 1);
-    const goalRows = statsRows.filter((row) => row.goal && row.goal.protein_goal > 0);
-    const adhered = goalRows.filter((row) => row.goal && row.consumed.protein_g >= row.goal.protein_goal * 0.95).length;
-    const adherenceProteinPct = goalRows.length ? (adhered / goalRows.length) * 100 : 0;
-
-    let streakDays = 0;
-    for (const row of rows) {
-      if (row.intakes.length > 0) {
-        streakDays += 1;
-      } else {
-        break;
-      }
-    }
-
-    setWeeklyStats({
-      avgKcal: Math.round(avgKcal),
-      avgProtein: Math.round(avgProtein * 10) / 10,
-      adherenceProteinPct: Math.round(adherenceProteinPct),
-      streakDays,
-    });
-  }, [auth]);
+  const dayDetailLoadingRef = useRef(new Set<string>());
+  const monthLoadInFlightRef = useRef<string | null>(null);
 
   const load = useCallback(async () => {
+    if (monthLoadInFlightRef.current === monthKey) {
+      return;
+    }
+    monthLoadInFlightRef.current = monthKey;
     setLoading(true);
     try {
-      const [response, weights] = await Promise.all([auth.fetchCalendar(monthKey), auth.fetchWeightLogs(365)]);
+      const response = await auth.fetchCalendar(monthKey);
       setDays(response.days);
+      setDayDetailMap({});
 
       const dateToWeight: Record<string, number> = {};
-      weights.forEach((row) => {
-        const day = row.created_at.slice(0, 10);
-        if (!dateToWeight[day]) {
-          dateToWeight[day] = row.weight_kg;
+      response.days.forEach((entry) => {
+        if (typeof entry.weight_kg === "number") {
+          dateToWeight[entry.date] = entry.weight_kg;
         }
       });
       setWeightDateMap(dateToWeight);
-
-      const detailMap: Record<string, DaySummary> = {};
-      const detailDays = response.days.filter((day) => day.intake_count > 0).map((day) => day.date);
-      const details = await Promise.all(
-        detailDays.map(async (date) => {
-          try {
-            const detail = await auth.fetchDaySummary(date);
-            return { date, detail };
-          } catch {
-            return null;
-          }
-        }),
-      );
-      details.forEach((item) => {
-        if (item) {
-          detailMap[item.date] = item.detail;
-        }
-      });
-      setDayDetailMap(detailMap);
-
-      await computeWeeklyStats();
     } catch (error) {
-      Alert.alert("Historial", parseApiError(error));
+      showAlert("Historial", parseApiError(error));
     } finally {
+      if (monthLoadInFlightRef.current === monthKey) {
+        monthLoadInFlightRef.current = null;
+      }
       setLoading(false);
     }
-  }, [auth, computeWeeklyStats, monthKey]);
+  }, [auth.fetchCalendar, monthKey]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    if (!selectedDay) {
+      return;
+    }
+    if (dayDetailMap[selectedDay]) {
+      return;
+    }
+    const selectedEntry = days.find((entry) => entry.date === selectedDay);
+    if ((selectedEntry?.intake_count ?? 0) <= 0) {
+      return;
+    }
+    if (dayDetailLoadingRef.current.has(selectedDay)) {
+      return;
+    }
+    dayDetailLoadingRef.current.add(selectedDay);
+
+    void (async () => {
+      try {
+        const detail = await auth.fetchDaySummary(selectedDay);
+        setDayDetailMap((current) => {
+          if (current[selectedDay]) {
+            return current;
+          }
+          return {
+            ...current,
+            [selectedDay]: detail,
+          };
+        });
+      } catch (error) {
+        showAlert("Historial", parseApiError(error));
+      } finally {
+        dayDetailLoadingRef.current.delete(selectedDay);
+      }
+    })();
+  }, [auth.fetchDaySummary, dayDetailMap, days, selectedDay]);
 
   useEffect(() => {
     setSelectedDay((current) => {
@@ -3394,9 +4274,79 @@ function HistoryScreen() {
     });
     return map;
   }, [days]);
+  const dayByDateMap = useMemo(() => {
+    const map = new Map<string, CalendarDayEntry>();
+    days.forEach((entry) => {
+      map.set(entry.date, entry);
+    });
+    return map;
+  }, [days]);
+  const weeklyStats = useMemo(() => {
+    const currentMonth = monthFromKey(monthKey);
+    const isCurrentMonth = todayIso.startsWith(monthKey);
+    const monthLastDay = new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1, 0);
+    const endDate = isCurrentMonth ? new Date(`${todayIso}T00:00:00`) : monthLastDay;
+
+    const windowDays: string[] = [];
+    for (let i = 0; i < 7; i += 1) {
+      const day = new Date(endDate);
+      day.setDate(endDate.getDate() - i);
+      const iso = formatDateLocal(day);
+      if (!iso.startsWith(monthKey)) {
+        break;
+      }
+      windowDays.push(iso);
+    }
+
+    if (windowDays.length === 0) {
+      return null;
+    }
+
+    let kcalSum = 0;
+    let proteinSum = 0;
+    let goalRows = 0;
+    let adheredRows = 0;
+    for (const iso of windowDays) {
+      const entry = dayByDateMap.get(iso);
+      const kcal = entry?.kcal ?? 0;
+      const protein = entry?.protein_g ?? 0;
+      const proteinGoal = entry?.protein_goal_g ?? null;
+      kcalSum += kcal;
+      proteinSum += protein;
+      if (proteinGoal && proteinGoal > 0) {
+        goalRows += 1;
+        if (protein >= proteinGoal * 0.95) {
+          adheredRows += 1;
+        }
+      }
+    }
+
+    let streakDays = 0;
+    for (let i = 0; i < 31; i += 1) {
+      const day = new Date(endDate);
+      day.setDate(endDate.getDate() - i);
+      const iso = formatDateLocal(day);
+      if (!iso.startsWith(monthKey)) {
+        break;
+      }
+      const entry = dayByDateMap.get(iso);
+      if ((entry?.intake_count ?? 0) > 0) {
+        streakDays += 1;
+      } else {
+        break;
+      }
+    }
+
+    return {
+      avgKcal: Math.round(kcalSum / windowDays.length),
+      avgProtein: Math.round((proteinSum / windowDays.length) * 10) / 10,
+      adherenceProteinPct: goalRows ? Math.round((adheredRows / goalRows) * 100) : 0,
+      streakDays,
+    };
+  }, [dayByDateMap, monthKey, todayIso]);
   const monthLabel = useMemo(
-    () => monthFromKey(monthKey).toLocaleDateString("es-ES", { month: "long", year: "numeric" }),
-    [monthKey],
+    () => monthFromKey(monthKey).toLocaleDateString(locale, { month: "long", year: "numeric" }),
+    [locale, monthKey],
   );
   const selectedEntry = useMemo(
     () => (selectedDay ? days.find((entry) => entry.date === selectedDay) ?? null : null),
@@ -3410,16 +4360,16 @@ function HistoryScreen() {
       return "Detalle del día";
     }
     const parsed = new Date(`${selectedDay}T00:00:00`);
-    const label = parsed.toLocaleDateString("es-ES", {
+    const label = parsed.toLocaleDateString(locale, {
       weekday: "long",
       day: "numeric",
       month: "long",
     });
     return label.charAt(0).toUpperCase() + label.slice(1);
-  }, [selectedDay]);
+  }, [locale, selectedDay]);
 
   const confirmDeleteIntake = (intakeId: number) => {
-    Alert.alert("Eliminar consumo", "Este registro se eliminará del historial.", [
+    showAlert("Eliminar consumo", "Este registro se eliminará del historial.", [
       { text: "Cancelar", style: "cancel" },
       {
         text: "Eliminar",
@@ -3430,7 +4380,7 @@ function HistoryScreen() {
               await auth.deleteIntake(intakeId);
               await load();
             } catch (error) {
-              Alert.alert("Eliminar consumo", parseApiError(error));
+              showAlert("Eliminar consumo", parseApiError(error));
             }
           })();
         },
@@ -3441,7 +4391,7 @@ function HistoryScreen() {
   return (
     <SafeAreaView style={styles.screen}>
       <ScrollView contentContainerStyle={styles.mainScroll}>
-        <AppHeader title="History" subtitle="Actividad, adherencia y tendencias" />
+        <AppHeader title="Historial" subtitle="Actividad, adherencia y tendencias" />
 
         <AppCard>
           <SectionHeader title="Métricas últimos 7 días" />
@@ -3473,9 +4423,7 @@ function HistoryScreen() {
               onPress={() => setMonthKey((current) => moveMonth(current, -1))}
               style={({ pressed }) => [styles.historyCalendarArrowTouch, pressed && styles.historyCalendarArrowTouchPressed]}
             >
-              <Svg width={20} height={20} viewBox="0 0 122.88 116.6" fill="none">
-                <Path d={CALENDAR_LEFT_ARROW_PATH} fill={theme.text} />
-              </Svg>
+              <Text style={styles.historyCalendarArrowIcon}>‹</Text>
             </Pressable>
             <Text style={styles.historyCalendarMonthLabel}>{monthLabel}</Text>
             <Pressable
@@ -3483,9 +4431,7 @@ function HistoryScreen() {
               onPress={() => setMonthKey((current) => moveMonth(current, 1))}
               style={({ pressed }) => [styles.historyCalendarArrowTouch, pressed && styles.historyCalendarArrowTouchPressed]}
             >
-              <Svg width={20} height={20} viewBox="0 0 122.88 116.6" fill="none">
-                <Path d={CALENDAR_RIGHT_ARROW_PATH} fill={theme.text} />
-              </Svg>
+              <Text style={styles.historyCalendarArrowIcon}>›</Text>
             </Pressable>
           </View>
 
@@ -3495,23 +4441,21 @@ function HistoryScreen() {
             </View>
           ) : null}
 
-          {!loading ? (
+          {!loading && streakDays > 0 ? (
             <View
               style={[
                 styles.historyCalendarStreakBadge,
-                streakDays > 0 ? styles.historyCalendarStreakBadgeActive : styles.historyCalendarStreakBadgeIdle,
+                styles.historyCalendarStreakBadgeActive,
               ]}
             >
-              <View style={styles.streakFlame}>
+              <View style={styles.historyCalendarStreakFlameWrap}>
                 <SvgXml xml={STREAK_FLAME_SVG_XML} width="100%" height="100%" />
               </View>
               <View style={styles.historyCalendarStreakTextWrap}>
-                <Text style={styles.historyCalendarStreakTitle}>{streakDays > 0 ? "Racha activa" : "Racha inactiva"}</Text>
-                <Text style={styles.historyCalendarStreakSubtitle}>
-                  {streakDays > 0 ? "Consistencia semanal en curso" : "Registra comida hoy para activarla"}
-                </Text>
+                <Text style={styles.historyCalendarStreakTitle}>Racha activa</Text>
+                <Text style={styles.historyCalendarStreakSubtitle}>Consistencia semanal en curso</Text>
               </View>
-              <View style={styles.historyCalendarStreakMetric}>
+              <View style={[styles.historyCalendarStreakMetric, styles.historyCalendarStreakMetricActive]}>
                 <Text style={styles.historyCalendarStreakDays}>{streakDays}</Text>
                 <Text style={styles.historyCalendarStreakDaysLabel}>día{streakDays === 1 ? "" : "s"}</Text>
               </View>
@@ -3601,22 +4545,43 @@ function HistoryScreen() {
 
               {selectedDetail && selectedDetail.intakes.length > 0 ? (
                 <View style={styles.historyDetailList}>
-                  {selectedDetail.intakes.map((intake) => (
-                    <View key={intake.id} style={styles.historyIntakeRow}>
-                      <View style={styles.historyDayHead}>
-                        <Text style={styles.historyDate}>{intake.product_name ?? "Producto"}</Text>
-                        <Text style={styles.historyValue}>{Math.round(intake.nutrients.kcal)} kcal</Text>
+                  {selectedDetail.intakes.map((intake) => {
+                    const rawName = intake.product_name ?? "Producto";
+                    const displayName = normalizeDisplayProductName(rawName);
+                    const isAiEstimated =
+                      intake.estimated === true ||
+                      intake.source_method === "meal_photo" ||
+                      intake.source_method === "photo_estimate" ||
+                      /^estimado:\s*/i.test(rawName);
+
+                    return (
+                      <View key={intake.id} style={styles.historyIntakeRow}>
+                        <View style={styles.historyDayHead}>
+                          <View style={styles.historyDayHeadLeft}>
+                            <Text style={styles.historyDate} numberOfLines={1} ellipsizeMode="tail">
+                              {displayName}
+                            </Text>
+                            {isAiEstimated ? (
+                              <View style={styles.historyAIBadge}>
+                                <Text style={styles.historyAIBadgeText}>IA</Text>
+                              </View>
+                            ) : null}
+                          </View>
+                          <Text style={styles.historyValue} numberOfLines={1} ellipsizeMode="clip">
+                            {Math.round(intake.nutrients.kcal)} kcal
+                          </Text>
+                        </View>
+                        <Text style={styles.helperText} numberOfLines={2} ellipsizeMode="tail">
+                          {new Date(intake.created_at).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" })} ·{" "}
+                          {Math.round(intake.quantity_g ?? 0)} g · P {Math.round(intake.nutrients.protein_g)} / C{" "}
+                          {Math.round(intake.nutrients.carbs_g)} / G {Math.round(intake.nutrients.fat_g)}
+                        </Text>
+                        <Pressable onPress={() => confirmDeleteIntake(intake.id)} style={styles.historyDeleteBtn}>
+                          <Text style={styles.historyDeleteText}>Eliminar</Text>
+                        </Pressable>
                       </View>
-                      <Text style={styles.helperText}>
-                        {new Date(intake.created_at).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })} ·{" "}
-                        {Math.round(intake.quantity_g ?? 0)} g · P {Math.round(intake.nutrients.protein_g)} / C{" "}
-                        {Math.round(intake.nutrients.carbs_g)} / G {Math.round(intake.nutrients.fat_g)}
-                      </Text>
-                      <Pressable onPress={() => confirmDeleteIntake(intake.id)} style={styles.historyDeleteBtn}>
-                        <Text style={styles.historyDeleteText}>Eliminar</Text>
-                      </Pressable>
-                    </View>
-                  ))}
+                    );
+                  })}
                 </View>
               ) : (
                 <EmptyState
@@ -3636,6 +4601,7 @@ function HistoryScreen() {
 
 function SettingsScreen() {
   const auth = useAuth();
+  const { language, setLanguage } = useI18n();
   const today = useMemo(() => formatDateLocal(new Date()), []);
   const [apiDraft, setApiDraft] = useState(auth.apiBaseUrl);
   const [checking, setChecking] = useState(false);
@@ -3670,8 +4636,6 @@ function SettingsScreen() {
   const [profileDraft, setProfileDraft] = useState({
     weight_kg: auth.profile?.weight_kg ? String(auth.profile.weight_kg) : "",
     height_cm: auth.profile?.height_cm ? String(auth.profile.height_cm) : "",
-    age: auth.profile?.age ? String(auth.profile.age) : "",
-    sex: auth.profile?.sex ?? "other",
     activity_level: auth.profile?.activity_level ?? "moderate",
     goal_type: auth.profile?.goal_type ?? "maintain",
     weekly_weight_goal_kg: auth.profile?.weekly_weight_goal_kg ? String(auth.profile.weekly_weight_goal_kg) : "",
@@ -3684,8 +4648,6 @@ function SettingsScreen() {
     setProfileDraft({
       weight_kg: auth.profile?.weight_kg ? String(auth.profile.weight_kg) : "",
       height_cm: auth.profile?.height_cm ? String(auth.profile.height_cm) : "",
-      age: auth.profile?.age ? String(auth.profile.age) : "",
-      sex: auth.profile?.sex ?? "other",
       activity_level: auth.profile?.activity_level ?? "moderate",
       goal_type: auth.profile?.goal_type ?? "maintain",
       weekly_weight_goal_kg: auth.profile?.weekly_weight_goal_kg ? String(auth.profile.weekly_weight_goal_kg) : "",
@@ -3726,11 +4688,11 @@ function SettingsScreen() {
         });
       }
     } catch (error) {
-      Alert.alert("Settings", parseApiError(error));
+      showAlert("Settings", parseApiError(error));
     } finally {
       setLoadingMeta(false);
     }
-  }, [auth, today]);
+  }, [auth.fetchAnalysis, auth.fetchBodySummary, auth.fetchGoal, auth.fetchUserAIKeyStatus, today]);
 
   useEffect(() => {
     void loadMeta();
@@ -3743,7 +4705,7 @@ function SettingsScreen() {
   const applyApi = async () => {
     const normalized = normalizeBaseUrl(apiDraft);
     if (!normalized) {
-      Alert.alert("API", "URL inválida.");
+      showAlert("API", "URL inválida.");
       return;
     }
 
@@ -3753,11 +4715,11 @@ function SettingsScreen() {
     setChecking(false);
 
     if (!ok) {
-      Alert.alert("API", "No se pudo conectar con esa URL.");
+      showAlert("API", "No se pudo conectar con esa URL.");
       return;
     }
 
-    Alert.alert("API", "Conexión OK.");
+    showAlert("API", "Conexión OK.");
   };
 
   const saveGoals = async () => {
@@ -3768,16 +4730,16 @@ function SettingsScreen() {
       carbs_goal: Number(goalDraft.carbs_goal),
     };
     if (!payload.kcal_goal || !payload.protein_goal || !payload.fat_goal || !payload.carbs_goal) {
-      Alert.alert("Objetivos", "Revisa los valores.");
+      showAlert("Objetivos", "Revisa los valores.");
       return;
     }
     setSavingGoals(true);
     try {
       await auth.saveGoal(today, payload);
-      Alert.alert("Objetivos", "Objetivos guardados.");
+      showAlert("Objetivos", "Objetivos guardados.");
       await loadMeta();
     } catch (error) {
-      Alert.alert("Objetivos", parseApiError(error));
+      showAlert("Objetivos", parseApiError(error));
     } finally {
       setSavingGoals(false);
     }
@@ -3799,7 +4761,7 @@ function SettingsScreen() {
     const weight = toPositiveNumberOrNull(profileDraft.weight_kg);
     const height = toPositiveNumberOrNull(profileDraft.height_cm);
     if (!weight || !height) {
-      Alert.alert("Perfil", "Peso y altura son obligatorios.");
+      showAlert("Perfil", "Peso y altura son obligatorios.");
       return;
     }
 
@@ -3808,8 +4770,8 @@ function SettingsScreen() {
       await auth.saveProfile({
         weight_kg: weight,
         height_cm: height,
-        age: profileDraft.age.trim() ? Number(profileDraft.age) : null,
-        sex: profileDraft.sex,
+        age: auth.profile?.age ?? ageFromBirthDateString(auth.user?.birth_date),
+        sex: auth.user?.sex ?? auth.profile?.sex ?? "other",
         activity_level: profileDraft.activity_level,
         goal_type: profileDraft.goal_type,
         weekly_weight_goal_kg: toOptionalNumber(profileDraft.weekly_weight_goal_kg),
@@ -3820,10 +4782,10 @@ function SettingsScreen() {
         arm_cm: null,
         thigh_cm: null,
       });
-      Alert.alert("Perfil", "Perfil actualizado.");
+      showAlert("Perfil", "Perfil actualizado.");
       await loadMeta();
     } catch (error) {
-      Alert.alert("Perfil", parseApiError(error));
+      showAlert("Perfil", parseApiError(error));
     } finally {
       setSavingProfile(false);
     }
@@ -3848,9 +4810,9 @@ function SettingsScreen() {
       };
       const text = JSON.stringify(payload);
       console.log("NUTRI_EXPORT_JSON", text);
-      Alert.alert("Datos", `Export JSON generado (${Math.round(text.length / 1024)} KB). Revisar consola del bundler.`);
+      showAlert("Datos", tx("Export JSON generado ({{sizeKb}} KB). Revisar consola del bundler.", { sizeKb: Math.round(text.length / 1024) }));
     } catch (error) {
-      Alert.alert("Datos", parseApiError(error));
+      showAlert("Datos", parseApiError(error));
     }
   };
 
@@ -3879,9 +4841,9 @@ function SettingsScreen() {
 
       const csv = rows.join("\n");
       console.log("NUTRI_EXPORT_CSV", csv);
-      Alert.alert("Datos", `Export CSV generado (${rows.length - 1} días). Revisa consola del bundler.`);
+      showAlert("Datos", tx("Export CSV generado ({{days}} días). Revisa consola del bundler.", { days: rows.length - 1 }));
     } catch (error) {
-      Alert.alert("Datos", parseApiError(error));
+      showAlert("Datos", parseApiError(error));
     }
   };
 
@@ -3897,7 +4859,7 @@ function SettingsScreen() {
         rows.push(summary);
       }
       if (!rows.length) {
-        Alert.alert("Datos", "No hay datos suficientes para compartir.");
+        showAlert("Datos", "No hay datos suficientes para compartir.");
         return;
       }
       const avgKcal = rows.reduce((acc, row) => acc + row.consumed.kcal, 0) / rows.length;
@@ -3906,20 +4868,20 @@ function SettingsScreen() {
 
       await Share.share({
         message: [
-          "Resumen semanal Nutri Tracker",
-          `Kcal promedio: ${avgKcal.toFixed(0)}`,
-          `Proteína promedio: ${avgProtein.toFixed(1)} g`,
-          `Agua promedio: ${avgWater.toFixed(0)} ml`,
+          tx("Resumen semanal Nutri Tracker"),
+          tx("Kcal promedio: {{avgKcal}}", { avgKcal: avgKcal.toFixed(0) }),
+          tx("Proteína promedio: {{avgProtein}} g", { avgProtein: avgProtein.toFixed(1) }),
+          tx("Agua promedio: {{avgWater}} ml", { avgWater: avgWater.toFixed(0) }),
         ].join("\n"),
       });
     } catch (error) {
-      Alert.alert("Datos", parseApiError(error));
+      showAlert("Datos", parseApiError(error));
     }
   };
 
   const saveAIKey = async () => {
     if (!aiKeyInput.trim()) {
-      Alert.alert("IA", "Pega una API key válida.");
+      showAlert("IA", "Pega una API key válida.");
       return;
     }
 
@@ -3931,9 +4893,9 @@ function SettingsScreen() {
       });
       setAiKeyStatus(statusPayload);
       setAiKeyInput("");
-      Alert.alert("IA", "Clave guardada correctamente.");
+      showAlert("IA", "Clave guardada correctamente.");
     } catch (error) {
-      Alert.alert("IA", parseApiError(error));
+      showAlert("IA", parseApiError(error));
     } finally {
       setSavingAIKey(false);
     }
@@ -3946,11 +4908,11 @@ function SettingsScreen() {
         provider: "openai",
         apiKey: aiKeyInput.trim() || undefined,
       });
-      Alert.alert("IA", response.message);
+      showAlert("IA", response.message);
       const statusPayload = await auth.fetchUserAIKeyStatus();
       setAiKeyStatus(statusPayload);
     } catch (error) {
-      Alert.alert("IA", parseApiError(error));
+      showAlert("IA", parseApiError(error));
     } finally {
       setTestingAIKey(false);
     }
@@ -3963,9 +4925,9 @@ function SettingsScreen() {
       setAiKeyInput("");
       const statusPayload = await auth.fetchUserAIKeyStatus();
       setAiKeyStatus(statusPayload);
-      Alert.alert("IA", "Clave eliminada.");
+      showAlert("IA", "Clave eliminada.");
     } catch (error) {
-      Alert.alert("IA", parseApiError(error));
+      showAlert("IA", parseApiError(error));
     } finally {
       setDeletingAIKey(false);
     }
@@ -3987,10 +4949,25 @@ function SettingsScreen() {
             <TagChip label={hasProfileConfigured ? "Perfil completo" : "Perfil pendiente"} tone={hasProfileConfigured ? "accent" : "warning"} />
             <TagChip label={aiKeyStatus?.configured ? "IA activa" : "IA sin clave"} tone={aiKeyStatus?.configured ? "accent" : "default"} />
           </View>
-          <StatRow label="Coach hints" value={`${activeHintsCount}`} />
+          <StatRow label="Consejos" value={`${activeHintsCount}`} />
           <StatRow
             label="Sugerencia kcal"
             value={suggestedKcalAdjustment !== null ? `${suggestedKcalAdjustment >= 0 ? "+" : ""}${suggestedKcalAdjustment.toFixed(0)} kcal` : "N/D"}
+          />
+        </AppCard>
+
+        <AppCard>
+          <SectionHeader title="Idioma" subtitle="Selecciona el idioma de la app" />
+          <ChoiceRow
+            label="Idioma"
+            value={language}
+            onChange={(nextLanguage) => {
+              void setLanguage(nextLanguage);
+            }}
+            options={[
+              { label: "Español", value: "es" },
+              { label: "English", value: "en" },
+            ]}
           />
         </AppCard>
 
@@ -4070,28 +5047,22 @@ function SettingsScreen() {
                 onChangeText={(value) => setProfileDraft((current) => ({ ...current, weight_kg: value }))}
                 keyboardType="numeric"
               />
-              <InputField
-                label="Altura (cm)"
-                value={profileDraft.height_cm}
-                onChangeText={(value) => setProfileDraft((current) => ({ ...current, height_cm: value }))}
-                keyboardType="numeric"
-              />
-              <InputField
+              <ReadOnlyField label="Altura (cm)" value={profileDraft.height_cm || "No disponible"} />
+              <Text style={styles.helperText}>
+                Altura, sexo y edad quedan bloqueados tras el registro. La edad se recalcula al registrar peso en Cuerpo.
+              </Text>
+              <ReadOnlyField label="Sexo" value={auth.user?.sex ?? auth.profile?.sex ?? "other"} />
+              <ReadOnlyField
                 label="Edad"
-                value={profileDraft.age}
-                onChangeText={(value) => setProfileDraft((current) => ({ ...current, age: value }))}
-                keyboardType="numeric"
+                value={
+                  auth.profile?.age !== null && auth.profile?.age !== undefined
+                    ? String(auth.profile.age)
+                    : ageFromBirthDateString(auth.user?.birth_date) !== null
+                      ? String(ageFromBirthDateString(auth.user?.birth_date))
+                      : "No disponible"
+                }
               />
-              <ChoiceRow
-                label="Sexo"
-                value={profileDraft.sex}
-                onChange={(value) => setProfileDraft((current) => ({ ...current, sex: value }))}
-                options={[
-                  { label: "Masculino", value: "male" },
-                  { label: "Femenino", value: "female" },
-                  { label: "Otro", value: "other" },
-                ]}
-              />
+              <ReadOnlyField label="Fecha de nacimiento" value={auth.user?.birth_date ?? "No disponible"} />
               <ChoiceRow
                 label="Actividad"
                 value={profileDraft.activity_level}
@@ -4145,7 +5116,7 @@ function SettingsScreen() {
             <View style={styles.settingsCollapsedSummary}>
               <StatRow label="Peso" value={profileDraft.weight_kg ? `${profileDraft.weight_kg} kg` : "-"} />
               <StatRow label="Altura" value={profileDraft.height_cm ? `${profileDraft.height_cm} cm` : "-"} />
-              <StatRow label="Sexo" value={profileDraft.sex} />
+              <StatRow label="Sexo" value={auth.user?.sex ?? auth.profile?.sex ?? "other"} />
             </View>
           )}
         </AppCard>
@@ -4246,7 +5217,7 @@ function SettingsScreen() {
               <SecondaryButton title="Compartir resumen semanal" onPress={() => void shareWeeklySummary()} />
               <SecondaryButton
                 title="Reset demo data (stub)"
-                onPress={() => Alert.alert("Datos", "Stub listo. Pendiente endpoint de borrado seguro.")}
+                onPress={() => showAlert("Datos", "Stub listo. Pendiente endpoint de borrado seguro.")}
               />
               <SectionHeader title="Coach hints activos" />
               {bodyHints.length ? (
@@ -4306,44 +5277,78 @@ function QuantityMethodSelector(props: {
   );
 }
 
-function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchActionHandled: (requestId: number) => void }) {
+function AddScreen(props: {
+  isActive: boolean;
+  launchAction: AddLaunchAction | null;
+  onLaunchActionHandled: (requestId: number) => void;
+  onIntakeSaved: () => void;
+  onMealSourceSheetVisibilityChange: (visible: boolean) => void;
+  onScanCameraVisibilityChange: (visible: boolean) => void;
+  onMealQuestionsVisibilityChange: (visible: boolean) => void;
+  onBackToPanel: () => void;
+}) {
   const auth = useAuth();
+  const { language } = useI18n();
+  const notifyMealSourceSheetVisibility = props.onMealSourceSheetVisibilityChange;
+  const notifyScanCameraVisibility = props.onScanCameraVisibilityChange;
+  const notifyMealQuestionsVisibility = props.onMealQuestionsVisibilityChange;
   const [permission, requestPermission] = useCameraPermissions();
   const [mode, setMode] = useState<AddMode>("hub");
   const [scanLocked, setScanLocked] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [scanSuccessFlash, setScanSuccessFlash] = useState(false);
+  const [showScannedProductImage, setShowScannedProductImage] = useState(false);
   const [phase, setPhase] = useState<"camera" | "label" | "quantity">("camera");
+  const [quantityBackTarget, setQuantityBackTarget] = useState<AddBackTarget>("hub");
   const [barcode, setBarcode] = useState("");
   const [product, setProduct] = useState<Product | null>(null);
   const [productQuality, setProductQuality] = useState<ProductDataQuality | null>(null);
   const [preferredServing, setPreferredServing] = useState<ProductPreference | null>(null);
+  const scanRequestLockRef = useRef(false);
   const scanPulse = useRef(new Animated.Value(0)).current;
   const [recentProducts, setRecentProducts] = useState<Array<{ id: number; name: string }>>([]);
   const [favoriteProducts, setFavoriteProducts] = useState<FavoriteProduct[]>([]);
+  const [myRecipeProducts, setMyRecipeProducts] = useState<Product[]>([]);
+  const [loadingMyRecipes, setLoadingMyRecipes] = useState(false);
+  const lastHubDataRefreshRef = useRef(0);
+  const lastRecipesRefreshRef = useRef(0);
 
   const [labelName, setLabelName] = useState("");
   const [labelBrand, setLabelBrand] = useState("");
   const [labelText, setLabelText] = useState("");
+  const [labelFixKcal, setLabelFixKcal] = useState("");
+  const [labelFixProtein, setLabelFixProtein] = useState("");
+  const [labelFixFat, setLabelFixFat] = useState("");
+  const [labelFixCarbs, setLabelFixCarbs] = useState("");
   const [labelPhotos, setLabelPhotos] = useState<string[]>([]);
   const [labelQuestions, setLabelQuestions] = useState<string[]>([]);
   const [correctionPreview, setCorrectionPreview] = useState<ProductCorrectionResponse | null>(null);
 
   const [mealDescription, setMealDescription] = useState("");
+  const [mealPlateWeight, setMealPlateWeight] = useState("");
   const [mealPhotos, setMealPhotos] = useState<string[]>([]);
   const [mealStep, setMealStep] = useState<"compose" | "questions" | "result">("compose");
-  const [mealAdjust, setMealAdjust] = useState(0);
   const [mealQuestions, setMealQuestions] = useState<MealEstimateQuestion[]>([]);
   const [mealQuestionAnswers, setMealQuestionAnswers] = useState<Record<string, string>>({});
   const [mealAssumptions, setMealAssumptions] = useState<string[]>([]);
   const [mealIngredients, setMealIngredients] = useState<string[]>([]);
+  const [mealAnalysisId, setMealAnalysisId] = useState<string | null>(null);
+  const [mealAnalysisExpiresAt, setMealAnalysisExpiresAt] = useState<string | null>(null);
   const [mealPreview, setMealPreview] = useState<MealPhotoEstimateResponse | null>(null);
+  const [mealEditable, setMealEditable] = useState<{ kcal: string; protein_g: string; fat_g: string; carbs_g: string }>({
+    kcal: "",
+    protein_g: "",
+    fat_g: "",
+    carbs_g: "",
+  });
+  const [mealQuestionProgress, setMealQuestionProgress] = useState(0);
+  const [mealQuestionPhase, setMealQuestionPhase] = useState<string | null>(null);
+  const [mealSourceSheetOpen, setMealSourceSheetOpen] = useState(false);
+  const [mealSourceSheetVisible, setMealSourceSheetVisible] = useState(false);
+  const mealSourceSheetAnim = useRef(new Animated.Value(0)).current;
   const [toastFeedback, setToastFeedback] = useState<{ kind: "success" | "error"; message: string } | null>(null);
 
   const [manualName, setManualName] = useState("");
-  const [manualBrand, setManualBrand] = useState("");
-  const [manualBarcode, setManualBarcode] = useState("");
-  const [manualImageUrl, setManualImageUrl] = useState("");
   const [manualKcal, setManualKcal] = useState("");
   const [manualProtein, setManualProtein] = useState("");
   const [manualFat, setManualFat] = useState("");
@@ -4353,11 +5358,14 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
   const [manualHasSearched, setManualHasSearched] = useState(false);
   const [showManualCreateForm, setShowManualCreateForm] = useState(false);
   const [searchingFoods, setSearchingFoods] = useState(false);
+  const manualSearchRequestIdRef = useRef(0);
+  const lastManualSearchQueryRef = useRef("");
 
   const [method, setMethod] = useState<IntakeMethod>("grams");
-  const [grams, setGrams] = useState(120);
+  const [grams, setGrams] = useState(100);
   const [units, setUnits] = useState(1);
   const [percentPack, setPercentPack] = useState(25);
+  const [useDefaultSummary100g, setUseDefaultSummary100g] = useState(true);
   const [saving, setSaving] = useState(false);
   const todayKey = useMemo(() => formatDateLocal(new Date()), []);
 
@@ -4371,15 +5379,23 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
 
     const result = await requestPermission();
     if (!result.granted) {
-      Alert.alert("Permisos", "Activa permiso de cámara para usar el escáner.");
+      showAlert("Permisos", "Activa permiso de cámara para usar el escáner.");
     }
   }, [permission?.granted, requestPermission]);
 
   const resetScanState = useCallback(() => {
+    scanRequestLockRef.current = false;
+    setMealSourceSheetOpen(false);
+    setMealSourceSheetVisible(false);
+    notifyMealSourceSheetVisibility(false);
+    notifyMealQuestionsVisibility(false);
+    mealSourceSheetAnim.setValue(0);
     setPhase("camera");
+    setQuantityBackTarget("hub");
     setScanLocked(false);
     setProcessing(false);
     setScanSuccessFlash(false);
+    setShowScannedProductImage(false);
     setProduct(null);
     setProductQuality(null);
     setPreferredServing(null);
@@ -4387,42 +5403,33 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
     setLabelName("");
     setLabelBrand("");
     setLabelText("");
+    setLabelFixKcal("");
+    setLabelFixProtein("");
+    setLabelFixFat("");
+    setLabelFixCarbs("");
     setLabelPhotos([]);
     setLabelQuestions([]);
     setCorrectionPreview(null);
+    setMealAnalysisId(null);
+    setMealAnalysisExpiresAt(null);
+    setMealQuestionProgress(0);
+    setMealQuestionPhase(null);
     setMethod("grams");
-    setGrams(120);
+    setGrams(100);
     setUnits(1);
     setPercentPack(25);
-  }, []);
+  }, [mealSourceSheetAnim, notifyMealQuestionsVisibility, notifyMealSourceSheetVisibility]);
 
   const resetToHub = useCallback(() => {
     resetScanState();
     setMode("hub");
   }, [resetScanState]);
 
-  const prefillFromPreference = useCallback((nextProduct: Product, pref: ProductPreference | null) => {
-    if (!pref) {
-      if (nextProduct.serving_size_g) {
-        setMethod("units");
-        setUnits(1);
-      } else {
-        setMethod("grams");
-        setGrams(120);
-      }
-      return;
-    }
-
-    setMethod(pref.method);
-    if (pref.quantity_g) {
-      setGrams(pref.quantity_g);
-    }
-    if (pref.quantity_units) {
-      setUnits(pref.quantity_units);
-    }
-    if (pref.percent_pack) {
-      setPercentPack(pref.percent_pack);
-    }
+  const prefillFromPreference = useCallback((_nextProduct: Product, _pref: ProductPreference | null) => {
+    setMethod("grams");
+    setGrams(100);
+    setUnits(1);
+    setPercentPack(25);
   }, []);
 
   const loadRecentProducts = useCallback(async () => {
@@ -4437,7 +5444,10 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
             return;
           }
           seen.add(intake.product_id);
-          next.push({ id: intake.product_id, name: intake.product_name ?? `Producto ${intake.product_id}` });
+          next.push({
+            id: intake.product_id,
+            name: intake.product_name ?? tx("Producto {{productId}}", { productId: intake.product_id }),
+          });
         });
       setRecentProducts(next.slice(0, 6));
       setFavoriteProducts(favorites);
@@ -4445,19 +5455,42 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
       setRecentProducts([]);
       setFavoriteProducts([]);
     }
-  }, [auth, todayKey]);
+  }, [auth.fetchDaySummary, auth.fetchFavoriteProducts, todayKey]);
+
+  const loadMyRecipeProducts = useCallback(async () => {
+    setLoadingMyRecipes(true);
+    try {
+      const rows = await auth.fetchMyCommunityFoods(120);
+      setMyRecipeProducts(rows);
+    } catch (error) {
+      showAlert("Mis recetas", parseApiError(error));
+      setMyRecipeProducts([]);
+    } finally {
+      setLoadingMyRecipes(false);
+    }
+  }, [auth.fetchMyCommunityFoods]);
+
+  const openProductInQuantity = useCallback(
+    (nextProduct: Product, backTarget: AddBackTarget = "hub") => {
+      setShowScannedProductImage(false);
+      setQuantityBackTarget(backTarget);
+      setProduct(nextProduct);
+      setPreferredServing(null);
+      setLabelName(nextProduct.name);
+      setLabelBrand(nextProduct.brand ?? "");
+      setMode("barcode");
+      setPhase("quantity");
+      prefillFromPreference(nextProduct, null);
+    },
+    [prefillFromPreference],
+  );
 
   const startBarcodeFlow = async () => {
     resetScanState();
+    setQuantityBackTarget("barcode_camera");
     setMode("barcode");
     setPhase("camera");
     await requestCameraAndUnlock();
-  };
-
-  const startLabelFlow = () => {
-    resetScanState();
-    setMode("label_fix");
-    setPhase("label");
   };
 
   const ensureAIKeyConfigured = useCallback(async (): Promise<boolean> => {
@@ -4466,10 +5499,10 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
       if (statusPayload.configured) {
         return true;
       }
-      Alert.alert("IA", "Configura tu API key en Settings > IA para usar estimación por foto.");
+      showAlert("IA", "Configura tu API key en Settings > IA para usar estimación por foto.");
       return false;
     } catch (error) {
-      Alert.alert("IA", parseApiError(error));
+      showAlert("IA", parseApiError(error));
       return false;
     }
   }, [auth]);
@@ -4482,24 +5515,98 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
 
     resetScanState();
     setMealDescription("");
+    setMealPlateWeight("");
     setMealPhotos([]);
     setMealStep("compose");
-    setMealAdjust(0);
     setMealQuestions([]);
     setMealQuestionAnswers({});
     setMealAssumptions([]);
     setMealIngredients([]);
+    setMealAnalysisId(null);
+    setMealAnalysisExpiresAt(null);
     setMealPreview(null);
+    setMealQuestionProgress(0);
+    setMealQuestionPhase(null);
+    setMealEditable({
+      kcal: "",
+      protein_g: "",
+      fat_g: "",
+      carbs_g: "",
+    });
     setToastFeedback(null);
     setMode("meal_photo");
   };
 
+  const openMealSourceSheet = useCallback(() => {
+    if (mealSourceSheetOpen) {
+      return;
+    }
+    notifyMealSourceSheetVisibility(true);
+    setMealSourceSheetVisible(true);
+    setMealSourceSheetOpen(true);
+    mealSourceSheetAnim.stopAnimation();
+    Animated.spring(mealSourceSheetAnim, {
+      toValue: 1,
+      damping: 22,
+      stiffness: 240,
+      mass: 0.95,
+      useNativeDriver: true,
+    }).start();
+  }, [mealSourceSheetAnim, mealSourceSheetOpen, notifyMealSourceSheetVisibility]);
+
+  const closeMealSourceSheet = useCallback(
+    (onClosed?: () => void) => {
+      if (!mealSourceSheetVisible) {
+        onClosed?.();
+        return;
+      }
+      setMealSourceSheetOpen(false);
+      notifyMealSourceSheetVisibility(false);
+      mealSourceSheetAnim.stopAnimation();
+      Animated.timing(mealSourceSheetAnim, {
+        toValue: 0,
+        duration: 230,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }).start(({ finished }) => {
+        if (finished) {
+          setMealSourceSheetVisible(false);
+        }
+        onClosed?.();
+      });
+    },
+    [mealSourceSheetAnim, mealSourceSheetVisible, notifyMealSourceSheetVisibility],
+  );
+
+  useEffect(() => {
+    return () => {
+      notifyMealSourceSheetVisibility(false);
+    };
+  }, [notifyMealSourceSheetVisibility]);
+
+  useEffect(() => {
+    notifyScanCameraVisibility(mode === "barcode" && phase === "camera" && props.isActive);
+  }, [mode, phase, notifyScanCameraVisibility, props.isActive]);
+
+  useEffect(() => {
+    return () => {
+      notifyScanCameraVisibility(false);
+    };
+  }, [notifyScanCameraVisibility]);
+
+  useEffect(() => {
+    notifyMealQuestionsVisibility(mode === "meal_photo" && mealStep === "questions" && props.isActive);
+  }, [mealStep, mode, notifyMealQuestionsVisibility, props.isActive]);
+
+  useEffect(() => {
+    return () => {
+      notifyMealQuestionsVisibility(false);
+    };
+  }, [notifyMealQuestionsVisibility]);
+
   const startManualFlow = () => {
     resetScanState();
     setManualName("");
-    setManualBrand("");
-    setManualBarcode("");
-    setManualImageUrl("");
     setManualKcal("");
     setManualProtein("");
     setManualFat("");
@@ -4508,7 +5615,21 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
     setManualResults([]);
     setManualHasSearched(false);
     setShowManualCreateForm(false);
+    manualSearchRequestIdRef.current += 1;
+    lastManualSearchQueryRef.current = "";
+    setQuantityBackTarget("manual");
     setMode("manual");
+  };
+
+  const startManualCreateFlow = () => {
+    startManualFlow();
+    setShowManualCreateForm(true);
+  };
+
+  const startRecipesFlow = () => {
+    resetScanState();
+    setQuantityBackTarget("recipes");
+    setMode("recipes");
   };
 
   const handledLaunchRef = useRef<number | null>(null);
@@ -4528,12 +5649,12 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
         await startBarcodeFlow();
         return;
       }
-      if (launch.action === "label_fix") {
-        startLabelFlow();
-        return;
-      }
       if (launch.action === "meal_photo") {
         await startMealFlow();
+        return;
+      }
+      if (launch.action === "recipes") {
+        startRecipesFlow();
         return;
       }
       startManualFlow();
@@ -4542,7 +5663,14 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
     void run().finally(() => {
       props.onLaunchActionHandled(launch.requestId);
     });
-  }, [props.launchAction, props.onLaunchActionHandled, startBarcodeFlow, startLabelFlow, startMealFlow, startManualFlow]);
+  }, [
+    props.launchAction,
+    props.onLaunchActionHandled,
+    startBarcodeFlow,
+    startMealFlow,
+    startManualFlow,
+    startRecipesFlow,
+  ]);
 
   const resolvedQuantityG = useMemo(() => {
     if (!product) {
@@ -4580,16 +5708,49 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
     };
   }, [product, resolvedQuantityG]);
 
+  const defaultSummary100g = useMemo(() => {
+    if (!product) {
+      return null;
+    }
+    if (product.nutrition_basis === "per_serving" && (product.serving_size_g ?? 0) > 0) {
+      const factor = 100 / (product.serving_size_g ?? 1);
+      return {
+        kcal: Math.round(product.kcal * factor),
+        protein: Math.round(product.protein_g * factor * 10) / 10,
+        carbs: Math.round(product.carbs_g * factor * 10) / 10,
+        fats: Math.round(product.fat_g * factor * 10) / 10,
+      };
+    }
+    return {
+      kcal: Math.round(product.kcal),
+      protein: Math.round(product.protein_g * 10) / 10,
+      carbs: Math.round(product.carbs_g * 10) / 10,
+      fats: Math.round(product.fat_g * 10) / 10,
+    };
+  }, [product]);
+
+  const quantityMacroSummary = useMemo(() => {
+    if (useDefaultSummary100g && defaultSummary100g) {
+      return defaultSummary100g;
+    }
+    if (previewNutrients) {
+      return previewNutrients;
+    }
+    return defaultSummary100g;
+  }, [defaultSummary100g, previewNutrients, useDefaultSummary100g]);
+
   const favoriteProductIds = useMemo(
     () => new Set(favoriteProducts.map((item) => item.product.id)),
     [favoriteProducts],
   );
 
   const handleScan = async (result: BarcodeScanningResult) => {
-    if (scanLocked) {
+    if (scanLocked || scanRequestLockRef.current) {
       return;
     }
 
+    scanRequestLockRef.current = true;
+    setShowScannedProductImage(true);
     setScanLocked(true);
     setProcessing(true);
     Vibration.vibrate(50);
@@ -4601,6 +5762,7 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
       const lookup = await auth.lookupByBarcode(raw);
 
       if (lookup.product) {
+        setQuantityBackTarget("barcode_camera");
         setProduct(lookup.product);
         prefillFromPreference(lookup.product, lookup.preferred_serving);
         setPreferredServing(lookup.preferred_serving);
@@ -4611,19 +5773,21 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
         });
         setPhase("quantity");
       } else {
+        setQuantityBackTarget("barcode_camera");
         setProduct(null);
         setPreferredServing(null);
         setLabelName("");
         setLabelBrand("");
         setLabelQuestions([
           lookup.message ?? "No hay nutrición suficiente para este barcode.",
-          ...lookup.missing_fields.map((field) => `Falta ${field}`),
+          ...lookup.missing_fields.map((field) => tx("Falta {{field}}", { field })),
         ]);
         setPhase("label");
       }
     } catch (error) {
-      Alert.alert("Escáner", parseApiError(error));
+      showAlert("Escáner", parseApiError(error));
       setScanLocked(false);
+      scanRequestLockRef.current = false;
       setPhase("camera");
     } finally {
       setProcessing(false);
@@ -4633,7 +5797,7 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
   const captureLabelPhoto = async () => {
     const permissionResult = await ImagePicker.requestCameraPermissionsAsync();
     if (!permissionResult.granted) {
-      Alert.alert("Permisos", "Necesitas permisos de cámara para capturar etiqueta.");
+      showAlert("Permisos", "Necesitas permisos de cámara para capturar etiqueta.");
       return;
     }
 
@@ -4647,10 +5811,114 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
     setLabelPhotos((current) => [...current, firstAsset.uri]);
   };
 
+  const readImageSize = useCallback(async (uri: string): Promise<{ width: number; height: number } | null> => {
+    return await new Promise((resolve) => {
+      Image.getSize(
+        uri,
+        (width, height) => resolve({ width, height }),
+        () => resolve(null),
+      );
+    });
+  }, []);
+
+  const preprocessMealPhotosForUpload = useCallback(
+    async (
+      uris: string[],
+      onProgress?: (ratio: number) => void,
+    ): Promise<string[]> => {
+      if (!uris.length) {
+        onProgress?.(1);
+        return [];
+      }
+
+      const output: string[] = [];
+      for (let index = 0; index < uris.length; index += 1) {
+        const uri = uris[index];
+        if (!uri) {
+          continue;
+        }
+        onProgress?.(index / uris.length);
+        try {
+          const size = await readImageSize(uri);
+          let resizeAction: ImageManipulator.ActionResize["resize"] | undefined;
+          if (size) {
+            const maxSide = Math.max(size.width, size.height);
+            if (maxSide > 1280) {
+              const scale = 1280 / maxSide;
+              resizeAction = {
+                width: Math.max(1, Math.round(size.width * scale)),
+                height: Math.max(1, Math.round(size.height * scale)),
+              };
+            }
+          }
+
+          const result = await ImageManipulator.manipulateAsync(
+            uri,
+            resizeAction ? [{ resize: resizeAction }] : [],
+            {
+              compress: 0.75,
+              format: ImageManipulator.SaveFormat.JPEG,
+              base64: false,
+            },
+          );
+          output.push(result.uri || uri);
+        } catch {
+          output.push(uri);
+        }
+        onProgress?.((index + 1) / uris.length);
+      }
+      return output;
+    },
+    [readImageSize],
+  );
+
+  const addMealPhotos = useCallback(
+    (uris: string[]) => {
+      const incoming = uris.filter((uri) => !!uri.trim());
+      if (!incoming.length) {
+        return;
+      }
+
+      const next = [...mealPhotos];
+      for (const uri of incoming) {
+        if (next.length >= MAX_MEAL_PHOTOS) {
+          break;
+        }
+        if (!next.includes(uri)) {
+          next.push(uri);
+        }
+      }
+
+      const added = next.length - mealPhotos.length;
+      if (added <= 0) {
+        showAlert("Fotos", tx("Máximo {{max}} fotos por estimación.", { max: MAX_MEAL_PHOTOS }));
+        return;
+      }
+      if (added < incoming.length) {
+        showAlert("Fotos", tx("Solo se guardaron {{max}} fotos (máximo).", { max: MAX_MEAL_PHOTOS }));
+      }
+
+      setMealPreview(null);
+      setMealPhotos(next);
+      setMealAnalysisId(null);
+      setMealAnalysisExpiresAt(null);
+      setMealStep("compose");
+      setMealQuestions([]);
+      setMealQuestionAnswers({});
+      setMealQuestionProgress(0);
+      setMealQuestionPhase(null);
+    },
+    [mealPhotos],
+  );
+
   const captureMealPhoto = async () => {
+    if (mealPhotos.length >= MAX_MEAL_PHOTOS) {
+      showAlert("Fotos", tx("Máximo {{max}} fotos por estimación.", { max: MAX_MEAL_PHOTOS }));
+      return;
+    }
     const permissionResult = await ImagePicker.requestCameraPermissionsAsync();
     if (!permissionResult.granted) {
-      Alert.alert("Permisos", "Necesitas permisos de cámara para capturar comida.");
+      showAlert("Permisos", "Necesitas permisos de cámara para capturar comida.");
       return;
     }
     const result = await ImagePicker.launchCameraAsync({ quality: 0.75, allowsEditing: false });
@@ -4658,45 +5926,66 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
     if (!firstAsset?.uri) {
       return;
     }
-    setMealPreview(null);
-    setMealPhotos([firstAsset.uri]);
-    setMealStep("compose");
-    setMealQuestions([]);
-    setMealQuestionAnswers({});
+    addMealPhotos([firstAsset.uri]);
   };
 
   const pickMealPhotoFromLibrary = async () => {
-    const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permissionResult.granted) {
-      Alert.alert("Permisos", "Necesitas permisos de galería para subir una foto.");
+    if (mealPhotos.length >= MAX_MEAL_PHOTOS) {
+      showAlert("Fotos", tx("Máximo {{max}} fotos por estimación.", { max: MAX_MEAL_PHOTOS }));
       return;
     }
+    const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permissionResult.granted) {
+      showAlert("Permisos", "Necesitas permisos de galería para subir una foto.");
+      return;
+    }
+    const remaining = Math.max(1, MAX_MEAL_PHOTOS - mealPhotos.length);
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
       quality: 0.9,
       allowsEditing: false,
-      selectionLimit: 1,
+      allowsMultipleSelection: true,
+      selectionLimit: remaining,
     });
-    const firstAsset = result.canceled ? null : result.assets[0];
-    if (!firstAsset?.uri) {
+    const selectedUris = result.canceled ? [] : result.assets.map((asset) => asset.uri).filter(Boolean);
+    if (!selectedUris.length) {
       return;
     }
-    setMealPreview(null);
-    setMealPhotos([firstAsset.uri]);
-    setMealStep("compose");
-    setMealQuestions([]);
-    setMealQuestionAnswers({});
+    addMealPhotos(selectedUris);
   };
 
   const removeMealPhoto = () => {
     setMealPhotos([]);
+    setMealPlateWeight("");
+    setMealAnalysisId(null);
+    setMealAnalysisExpiresAt(null);
     setMealQuestions([]);
     setMealQuestionAnswers({});
     setMealAssumptions([]);
     setMealIngredients([]);
     setMealPreview(null);
+    setMealQuestionProgress(0);
+    setMealQuestionPhase(null);
+    setMealEditable({
+      kcal: "",
+      protein_g: "",
+      fat_g: "",
+      carbs_g: "",
+    });
     setMealStep("compose");
   };
+
+  const resolveMealPlateWeightNote = useCallback((): string | null => {
+    const raw = mealPlateWeight.trim();
+    if (!raw) {
+      return "";
+    }
+    const parsed = Number(raw.replace(",", "."));
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      return null;
+    }
+    return `${Math.round(parsed)} g`;
+  }, [mealPlateWeight]);
 
   const runMealQuestions = async () => {
     const hasKey = await ensureAIKeyConfigured();
@@ -4704,15 +5993,52 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
       return;
     }
     if (mealPhotos.length === 0) {
-      Alert.alert("Estimación", "Primero toma o sube una foto de la comida.");
+      showAlert("Estimación", "Primero toma o sube una foto de la comida.");
       return;
     }
+    const resolvedPlateWeight = resolveMealPlateWeightNote();
+    if (resolvedPlateWeight === null) {
+      showAlert("Estimación", "El peso del plato debe ser un número válido en gramos.");
+      return;
+    }
+    const quantityNote = resolvedPlateWeight || undefined;
     setSaving(true);
+    setMealQuestionProgress(0);
+    setMealQuestionPhase(tx("Preparando fotos..."));
+    let progressTicker: ReturnType<typeof setInterval> | null = null;
     try {
+      const processedPhotos = await preprocessMealPhotosForUpload(mealPhotos, (ratio) => {
+        setMealQuestionProgress(Math.round(Math.max(0, Math.min(1, ratio)) * 35));
+      });
+      setMealQuestionPhase(tx("Subiendo fotos..."));
+      progressTicker = setInterval(() => {
+        setMealQuestionProgress((current) => {
+          if (current >= 92) {
+            return current;
+          }
+          const nextValue = current < 70 ? current + 2 : current + 1;
+          return Math.min(92, nextValue);
+        });
+        setMealQuestionPhase((currentPhase) => {
+          if (currentPhase === tx("Subiendo fotos...")) {
+            return tx("Analizando...");
+          }
+          return tx("Generando preguntas...");
+        });
+      }, 220);
+
       const response = await auth.mealEstimateQuestions({
         description: mealDescription.trim() || undefined,
-        photos: mealPhotos,
+        quantityNote,
+        photos: processedPhotos,
+        locale: language,
+        onUploadProgress: ({ ratio }) => {
+          const normalized = Math.max(0, Math.min(1, ratio));
+          setMealQuestionProgress((current) => Math.max(current, Math.round(35 + normalized * 35)));
+        },
       });
+      setMealQuestionProgress(100);
+      setMealQuestionPhase(tx("Preguntas listas"));
       const normalizedQuestions =
         response.question_items?.length > 0
           ? response.question_items
@@ -4733,31 +6059,92 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
       );
       setMealAssumptions(response.assumptions);
       setMealIngredients(response.detected_ingredients);
+      setMealAnalysisId(response.analysis_id ?? null);
+      setMealAnalysisExpiresAt(response.analysis_expires_at ?? null);
       setMealStep("questions");
     } catch (error) {
-      Alert.alert("Estimación", parseApiError(error));
+      showAlert("Estimación", parseApiError(error));
+      setMealQuestionProgress(0);
+      setMealQuestionPhase(null);
     } finally {
+      if (progressTicker) {
+        clearInterval(progressTicker);
+      }
       setSaving(false);
+      if (mealStep === "compose") {
+        setTimeout(() => {
+          setMealQuestionPhase(null);
+          setMealQuestionProgress(0);
+        }, 260);
+      }
     }
   };
 
-  const runMealPreview = async (adjustPercent = mealAdjust) => {
+  const parseMealMacroInput = useCallback((value: string): number | null => {
+    const normalized = value.trim().replace(",", ".");
+    if (!normalized) {
+      return null;
+    }
+    const parsed = Number(normalized);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      return null;
+    }
+    return parsed;
+  }, []);
+
+  const formatMealMacroInput = useCallback((value: number): string => {
+    if (!Number.isFinite(value)) {
+      return "";
+    }
+    const rounded = Math.round(value * 10) / 10;
+    return String(rounded).replace(".", ",");
+  }, []);
+
+  const resolveMealEditedMacros = useCallback((): MealEstimateOverride | null => {
+    if (!mealPreview) {
+      return null;
+    }
+
+    const fallback = mealPreview.preview_nutrients;
+
+    const resolved = {
+      kcal: parseMealMacroInput(mealEditable.kcal) ?? fallback.kcal,
+      protein_g: parseMealMacroInput(mealEditable.protein_g) ?? fallback.protein_g,
+      fat_g: parseMealMacroInput(mealEditable.fat_g) ?? fallback.fat_g,
+      carbs_g: parseMealMacroInput(mealEditable.carbs_g) ?? fallback.carbs_g,
+    };
+
+    if (Object.values(resolved).some((value) => !Number.isFinite(value) || value < 0)) {
+      return null;
+    }
+    return resolved;
+  }, [mealEditable, mealPreview, parseMealMacroInput]);
+
+  const runMealPreview = async () => {
     const hasKey = await ensureAIKeyConfigured();
     if (!hasKey) {
       return;
     }
     if (mealPhotos.length === 0) {
-      Alert.alert("Estimación", "Añade una foto antes de calcular.");
+      showAlert("Estimación", "Añade una foto antes de calcular.");
       return;
     }
+    const resolvedPlateWeight = resolveMealPlateWeightNote();
+    if (resolvedPlateWeight === null) {
+      showAlert("Estimación", "El peso del plato debe ser un número válido en gramos.");
+      return;
+    }
+    const quantityNote = resolvedPlateWeight || undefined;
     setSaving(true);
     try {
       const response = await auth.mealPhotoEstimateCalculate({
         description: mealDescription.trim() || undefined,
         answers: mealQuestionAnswers,
-        photos: mealPhotos,
-        adjustPercent,
+        quantityNote,
+        analysisId: mealAnalysisId ?? undefined,
+        photos: mealAnalysisId ? [] : mealPhotos,
         commit: false,
+        locale: language,
       });
       setMealPreview(response);
       if (response.question_items?.length) {
@@ -4765,10 +6152,20 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
       }
       setMealAssumptions(response.assumptions);
       setMealIngredients(response.detected_ingredients);
-      setMealAdjust(adjustPercent);
+      setMealEditable({
+        kcal: formatMealMacroInput(response.preview_nutrients.kcal),
+        protein_g: formatMealMacroInput(response.preview_nutrients.protein_g),
+        fat_g: formatMealMacroInput(response.preview_nutrients.fat_g),
+        carbs_g: formatMealMacroInput(response.preview_nutrients.carbs_g),
+      });
       setMealStep("result");
     } catch (error) {
-      Alert.alert("Estimación", parseApiError(error));
+      const message = parseApiError(error);
+      if (message.toLowerCase().includes("expir")) {
+        setMealAnalysisId(null);
+        setMealAnalysisExpiresAt(null);
+      }
+      showAlert("Estimación", message);
     } finally {
       setSaving(false);
     }
@@ -4780,52 +6177,97 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
       return;
     }
     if (mealPhotos.length === 0) {
-      Alert.alert("Estimación", "Añade una foto antes de guardar.");
+      showAlert("Estimación", "Añade una foto antes de guardar.");
       return;
     }
+    const resolvedPlateWeight = resolveMealPlateWeightNote();
+    if (resolvedPlateWeight === null) {
+      showAlert("Estimación", "El peso del plato debe ser un número válido en gramos.");
+      return;
+    }
+    const quantityNote = resolvedPlateWeight || undefined;
     setSaving(true);
     try {
+      const overrides = resolveMealEditedMacros();
+      if (!overrides) {
+        showAlert("Estimación", "Revisa los valores de kcal, proteína, grasas y carbohidratos.");
+        return;
+      }
       const response = await auth.mealPhotoEstimate({
         description: mealDescription.trim() || undefined,
         answers: mealQuestionAnswers,
-        photos: mealPhotos,
-        adjustPercent: mealAdjust,
+        quantityNote,
+        analysisId: mealAnalysisId ?? undefined,
+        photos: mealAnalysisId ? [] : mealPhotos,
         commit: true,
+        locale: language,
+        overrides,
       });
       if (!response.saved || !response.intake) {
-        Alert.alert("Estimación", "No se pudo guardar. Revisa las preguntas sugeridas.");
+        showAlert("Estimación", "No se pudo guardar. Revisa las preguntas sugeridas.");
         return;
       }
       setToastFeedback({ kind: "success", message: "Consumo guardado correctamente." });
       resetToHub();
+      props.onIntakeSaved();
     } catch (error) {
-      setToastFeedback({ kind: "error", message: parseApiError(error) });
+      const message = parseApiError(error);
+      if (message.toLowerCase().includes("expir")) {
+        setMealAnalysisId(null);
+        setMealAnalysisExpiresAt(null);
+      }
+      setToastFeedback({ kind: "error", message });
     } finally {
       setSaving(false);
     }
   };
 
+  const buildManualCorrectionLabelText = (): string | null => {
+    const parseNonNegative = (raw: string): number | null => {
+      const value = Number(raw.trim().replace(",", "."));
+      if (!Number.isFinite(value) || value < 0) {
+        return null;
+      }
+      return value;
+    };
+
+    const kcal = parseNonNegative(labelFixKcal);
+    const protein = parseNonNegative(labelFixProtein);
+    const fat = parseNonNegative(labelFixFat);
+    const carbs = parseNonNegative(labelFixCarbs);
+
+    if (kcal === null || protein === null || fat === null || carbs === null) {
+      showAlert("Corrección", "Introduce valores válidos de kcal, proteína, grasas y carbohidratos.");
+      return null;
+    }
+
+    return `Por 100 g Energía ${kcal} kcal Proteínas ${protein} g Grasas ${fat} g Carbohidratos ${carbs} g`;
+  };
+
   const createFromLabel = async () => {
-    if (!labelName.trim()) {
-      Alert.alert("Producto", "Indica nombre del producto.");
+    if (mode !== "label_fix" && !labelName.trim()) {
+      showAlert("Producto", "Indica nombre del producto.");
       return;
     }
 
     setSaving(true);
     try {
       if (mode === "label_fix") {
-        if (!product?.id && !barcode.trim()) {
-          Alert.alert("Corrección", "Necesitas un producto activo o un barcode para corregir.");
+        if (!product?.id) {
+          showAlert("Corrección", "Primero selecciona un producto escaneado para corregir.");
+          return;
+        }
+        const manualLabelText = buildManualCorrectionLabelText();
+        if (!manualLabelText) {
           return;
         }
 
         const correction = await auth.correctProductFromLabel({
-          productId: product?.id,
-          barcode: product?.id ? undefined : barcode.trim(),
-          name: labelName.trim(),
-          brand: labelBrand.trim(),
-          labelText: labelText.trim(),
-          photos: labelPhotos,
+          productId: product.id,
+          name: product.name,
+          brand: product.brand ?? "",
+          labelText: manualLabelText,
+          photos: [],
           confirmUpdate: false,
         });
         setCorrectionPreview(correction);
@@ -4847,17 +6289,18 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
       if (!response.created || !response.product) {
         const notes = [...response.questions, ...(response.warnings ?? [])];
         const questions = notes.join("\n") || "No se pudo crear/actualizar el producto.";
-        Alert.alert("Etiqueta", questions);
+        showAlert("Etiqueta", questions);
         setLabelQuestions(notes);
         return;
       }
 
       setProduct(response.product);
+      setQuantityBackTarget("barcode_camera");
       prefillFromPreference(response.product, preferredServing);
       setMode("barcode");
       setPhase("quantity");
     } catch (error) {
-      Alert.alert("Etiqueta", parseApiError(error));
+      showAlert("Etiqueta", parseApiError(error));
     } finally {
       setSaving(false);
     }
@@ -4867,64 +6310,91 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
     if (mode !== "label_fix") {
       return;
     }
-    if (!product?.id && !barcode.trim()) {
-      Alert.alert("Corrección", "Necesitas un producto activo o un barcode para confirmar.");
+    if (!product?.id) {
+      showAlert("Corrección", "Primero selecciona un producto escaneado para corregir.");
+      return;
+    }
+    const manualLabelText = buildManualCorrectionLabelText();
+    if (!manualLabelText) {
       return;
     }
 
     setSaving(true);
     try {
       const response = await auth.correctProductFromLabel({
-        productId: product?.id,
-        barcode: product?.id ? undefined : barcode.trim(),
-        name: labelName.trim(),
-        brand: labelBrand.trim(),
-        labelText: labelText.trim(),
-        photos: labelPhotos,
+        productId: product.id,
+        name: product.name,
+        brand: product.brand ?? "",
+        labelText: manualLabelText,
+        photos: [],
         confirmUpdate: true,
       });
       setCorrectionPreview(response);
       if (!response.updated) {
-        Alert.alert("Corrección", response.message);
+        showAlert("Corrección", response.message);
         return;
       }
       setProduct(response.product);
       prefillFromPreference(response.product, preferredServing);
       setMode("barcode");
       setPhase("quantity");
-      Alert.alert("Corrección", "Producto actualizado con datos verificados.");
+      showAlert("Corrección", "Producto actualizado con datos verificados.");
     } catch (error) {
-      Alert.alert("Corrección", parseApiError(error));
+      showAlert("Corrección", parseApiError(error));
     } finally {
       setSaving(false);
     }
   };
 
-  const searchManualFoods = async () => {
-    const query = manualSearch.trim();
-    if (query.length < 2) {
-      Alert.alert("Buscar", "Escribe al menos 2 caracteres.");
-      return;
-    }
+  const searchManualFoods = useCallback(
+    async (queryOverride?: string, options?: { silent?: boolean; force?: boolean }) => {
+      const query = (queryOverride ?? manualSearch).trim();
+      if (query.length < 2) {
+        if (!options?.silent) {
+          showAlert("Buscar", "Escribe al menos 2 caracteres.");
+        }
+        return;
+      }
 
-    setManualHasSearched(true);
-    setSearchingFoods(true);
-    try {
-      const response = await auth.searchFoods(query);
-      setManualResults(response.results);
-    } catch (error) {
-      Alert.alert("Buscar", parseApiError(error));
-    } finally {
-      setSearchingFoods(false);
-    }
-  };
+      if (!options?.force && query === lastManualSearchQueryRef.current) {
+        return;
+      }
+
+      const requestId = manualSearchRequestIdRef.current + 1;
+      manualSearchRequestIdRef.current = requestId;
+      setManualHasSearched(true);
+      setSearchingFoods(true);
+      try {
+        const response = await auth.searchFoods(query);
+        if (manualSearchRequestIdRef.current !== requestId) {
+          return;
+        }
+        lastManualSearchQueryRef.current = query;
+        setManualResults(response.results);
+      } catch (error) {
+        if (manualSearchRequestIdRef.current !== requestId) {
+          return;
+        }
+        if (!options?.silent) {
+          showAlert("Buscar", parseApiError(error));
+        }
+      } finally {
+        if (manualSearchRequestIdRef.current === requestId) {
+          setSearchingFoods(false);
+        }
+      }
+    },
+    [auth, manualSearch],
+  );
 
   const selectManualResult = async (item: FoodSearchItem) => {
+    setShowScannedProductImage(false);
     if (item.origin === "openfoodfacts_remote" && item.product.barcode) {
       setSearchingFoods(true);
       try {
         const lookup = await auth.lookupByBarcode(item.product.barcode);
         if (lookup.product) {
+          setQuantityBackTarget("manual");
           setProduct(lookup.product);
           prefillFromPreference(lookup.product, lookup.preferred_serving);
           setPreferredServing(lookup.preferred_serving);
@@ -4937,39 +6407,30 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
 
         setProduct(null);
         setPreferredServing(null);
+        setQuantityBackTarget("manual");
         setBarcode(item.product.barcode);
         setLabelName(item.product.name);
         setLabelBrand(item.product.brand ?? "");
         setLabelQuestions([
           lookup.message ?? "No hay nutrición suficiente para este barcode.",
-          ...lookup.missing_fields.map((field) => `Falta ${field}`),
+          ...lookup.missing_fields.map((field) => tx("Falta {{field}}", { field })),
         ]);
         setMode("barcode");
         setPhase("label");
         return;
       } catch (error) {
-        Alert.alert("Buscar", parseApiError(error));
+        showAlert("Buscar", parseApiError(error));
         return;
       } finally {
         setSearchingFoods(false);
       }
     }
 
-    setProduct(item.product);
-    setPreferredServing(null);
-    setLabelName(item.product.name);
-    setLabelBrand(item.product.brand ?? "");
-    setMode("barcode");
-    setPhase("quantity");
+    openProductInQuantity(item.product, "manual");
   };
 
   const selectFavoriteProduct = (favorite: FavoriteProduct) => {
-    setProduct(favorite.product);
-    setPreferredServing(null);
-    setLabelName(favorite.product.name);
-    setLabelBrand(favorite.product.brand ?? "");
-    setMode("barcode");
-    setPhase("quantity");
+    openProductInQuantity(favorite.product, "hub");
   };
 
   const toggleFavoriteForCurrentProduct = async () => {
@@ -4985,8 +6446,9 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
       }
       const favorites = await auth.fetchFavoriteProducts(12);
       setFavoriteProducts(favorites);
+      lastHubDataRefreshRef.current = 0;
     } catch (error) {
-      Alert.alert("Favoritos", parseApiError(error));
+      showAlert("Favoritos", parseApiError(error));
     } finally {
       setSaving(false);
     }
@@ -4998,32 +6460,24 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
     const fat = Number(manualFat);
     const carbs = Number(manualCarbs);
     const trimmedName = manualName.trim();
-    const trimmedBarcode = manualBarcode.trim();
 
     if (!trimmedName) {
-      Alert.alert("Manual", "El nombre es obligatorio.");
+      showAlert("Manual", "El nombre es obligatorio.");
       return;
     }
     if (trimmedName.length < 2) {
-      Alert.alert("Manual", "El nombre debe tener al menos 2 caracteres.");
-      return;
-    }
-    if (trimmedBarcode && !COMMUNITY_BARCODE_PATTERN.test(trimmedBarcode)) {
-      Alert.alert("Manual", "El barcode debe tener entre 8 y 14 dígitos.");
+      showAlert("Manual", "El nombre debe tener al menos 2 caracteres.");
       return;
     }
     if (![kcal, protein, fat, carbs].every((value) => Number.isFinite(value) && value >= 0)) {
-      Alert.alert("Manual", "Completa macros válidos por 100 g.");
+      showAlert("Manual", "Completa macros válidos por 100 g.");
       return;
     }
 
     setSaving(true);
     try {
       const response = await auth.createCommunityFood({
-        barcode: trimmedBarcode || undefined,
         name: trimmedName,
-        brand: manualBrand.trim() || undefined,
-        imageUrl: manualImageUrl.trim() || undefined,
         nutrition_basis: "per_100g",
         kcal,
         protein_g: protein,
@@ -5031,14 +6485,18 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
         carbs_g: carbs,
       });
       setProduct(response);
+      setShowScannedProductImage(false);
       setPreferredServing(null);
+      setQuantityBackTarget("manual");
       setMode("barcode");
       setPhase("quantity");
       setMethod("grams");
-      setGrams(120);
-      Alert.alert("Manual", "Producto compartido en la base comunitaria.");
+      setGrams(100);
+      lastHubDataRefreshRef.current = 0;
+      lastRecipesRefreshRef.current = 0;
+      showAlert("Manual", "Producto compartido en la base comunitaria.");
     } catch (error) {
-      Alert.alert("Manual", parseApiError(error));
+      showAlert("Manual", parseApiError(error));
     } finally {
       setSaving(false);
     }
@@ -5059,10 +6517,12 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
         await auth.createIntake({ product_id: product.id, method: "percent_pack", percent_pack: percentPack });
       }
 
-      Alert.alert("Consumo", "Intake guardado correctamente.");
+      showAlert("Consumo", "Consumo guardado correctamente.");
+      lastHubDataRefreshRef.current = 0;
       resetToHub();
+      props.onIntakeSaved();
     } catch (error) {
-      Alert.alert("Consumo", parseApiError(error));
+      showAlert("Consumo", parseApiError(error));
     } finally {
       setSaving(false);
     }
@@ -5070,7 +6530,7 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
 
   const saveWithPreferredQuantity = async () => {
     if (!product || !preferredServing) {
-      Alert.alert("Cantidad", "No hay una cantidad previa guardada para este producto.");
+      showAlert("Cantidad", "No hay una cantidad previa guardada para este producto.");
       return;
     }
 
@@ -5095,10 +6555,12 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
           percent_pack: preferredServing.percent_pack ?? 25,
         });
       }
-      Alert.alert("Consumo", "Guardado con la última cantidad usada.");
+      showAlert("Consumo", "Guardado con la última cantidad usada.");
+      lastHubDataRefreshRef.current = 0;
       resetToHub();
+      props.onIntakeSaved();
     } catch (error) {
-      Alert.alert("Consumo", parseApiError(error));
+      showAlert("Consumo", parseApiError(error));
     } finally {
       setSaving(false);
     }
@@ -5108,12 +6570,21 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
     if (!product) {
       return;
     }
+    const formatMacro = (value: number): string => {
+      const rounded = Math.round(value * 10) / 10;
+      return Number.isInteger(rounded) ? `${rounded}` : rounded.toString();
+    };
+
     setMode("label_fix");
     setPhase("label");
     setBarcode(product.barcode ?? "");
     setLabelName(product.name);
     setLabelBrand(product.brand ?? "");
     setLabelText("");
+    setLabelFixKcal(formatMacro(product.kcal));
+    setLabelFixProtein(formatMacro(product.protein_g));
+    setLabelFixFat(formatMacro(product.fat_g));
+    setLabelFixCarbs(formatMacro(product.carbs_g));
     setLabelPhotos([]);
     setLabelQuestions([]);
     setCorrectionPreview(null);
@@ -5155,8 +6626,48 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
     if (mode !== "hub") {
       return;
     }
+    const now = Date.now();
+    if (now - lastHubDataRefreshRef.current < 20_000) {
+      return;
+    }
+    lastHubDataRefreshRef.current = now;
     void loadRecentProducts();
   }, [loadRecentProducts, mode]);
+
+  useEffect(() => {
+    if (mode !== "manual") {
+      return;
+    }
+    const query = manualSearch.trim();
+    if (query.length < 2) {
+      manualSearchRequestIdRef.current += 1;
+      setSearchingFoods(false);
+      if (!query) {
+        setManualResults([]);
+        setManualHasSearched(false);
+        lastManualSearchQueryRef.current = "";
+      }
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      void searchManualFoods(query, { silent: true });
+    }, 320);
+
+    return () => clearTimeout(timer);
+  }, [manualSearch, mode, searchManualFoods]);
+
+  useEffect(() => {
+    if (mode !== "recipes") {
+      return;
+    }
+    const now = Date.now();
+    if (now - lastRecipesRefreshRef.current < 30_000) {
+      return;
+    }
+    lastRecipesRefreshRef.current = now;
+    void loadMyRecipeProducts();
+  }, [loadMyRecipeProducts, mode]);
 
   useEffect(() => {
     if (!toastFeedback) {
@@ -5170,6 +6681,7 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
     if (mode !== "barcode" || phase !== "quantity" || !product) {
       return;
     }
+    setUseDefaultSummary100g(true);
     let active = true;
     void auth
       .fetchProductDataQuality(product.id)
@@ -5186,7 +6698,12 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
     return () => {
       active = false;
     };
-  }, [auth, mode, phase, product]);
+  }, [auth.fetchProductDataQuality, mode, phase, product]);
+
+  const handleQuantityMethodChange = useCallback((nextMethod: IntakeMethod) => {
+    setUseDefaultSummary100g(false);
+    setMethod(nextMethod);
+  }, []);
 
   const searchBadgeTone = useCallback((badge: FoodSearchItem["badge"]): "default" | "accent" | "warning" | "danger" => {
     if (badge === "Verificado") {
@@ -5210,23 +6727,162 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
     );
   }, []);
 
+  const goBackInAdd = useCallback(() => {
+    if (saving || processing) {
+      return;
+    }
+
+    if (mode === "hub") {
+      return;
+    }
+
+    if (mode === "label_fix") {
+      setMode("barcode");
+      setPhase("quantity");
+      setCorrectionPreview(null);
+      setLabelQuestions([]);
+      return;
+    }
+
+    if (mode === "meal_photo") {
+      if (mealStep === "result") {
+        setMealStep("questions");
+        return;
+      }
+      if (mealStep === "questions") {
+        setMealStep("compose");
+        return;
+      }
+      resetToHub();
+      return;
+    }
+
+    if (mode === "manual") {
+      if (showManualCreateForm) {
+        setShowManualCreateForm(false);
+        return;
+      }
+      resetToHub();
+      return;
+    }
+
+    if (mode === "recipes") {
+      resetToHub();
+      return;
+    }
+
+    if (mode === "barcode") {
+      if (phase === "camera") {
+        resetToHub();
+        return;
+      }
+
+      if (phase === "label") {
+        if (quantityBackTarget === "manual") {
+          setMode("manual");
+          return;
+        }
+        if (quantityBackTarget === "recipes") {
+          setMode("recipes");
+          return;
+        }
+        setPhase("camera");
+        setScanLocked(false);
+        setProcessing(false);
+        setScanSuccessFlash(false);
+        return;
+      }
+
+      if (phase === "quantity") {
+        setShowScannedProductImage(false);
+        setProductQuality(null);
+        setProduct(null);
+        setPreferredServing(null);
+        if (quantityBackTarget === "manual") {
+          setMode("manual");
+          return;
+        }
+        if (quantityBackTarget === "recipes") {
+          setMode("recipes");
+          return;
+        }
+        if (quantityBackTarget === "barcode_camera") {
+          setPhase("camera");
+          setScanLocked(false);
+          setProcessing(false);
+          setScanSuccessFlash(false);
+          return;
+        }
+        resetToHub();
+      }
+    }
+  }, [mealStep, mode, phase, processing, quantityBackTarget, resetToHub, saving, showManualCreateForm]);
+
   const subtitle =
     mode === "hub"
-      ? "Escáner, etiqueta, foto de comida o carga manual"
+      ? "Escáner, recetas, foto de comida o carga manual"
       : mode === "barcode"
         ? "Escáner de código de barras"
         : mode === "label_fix"
           ? "Corregir o añadir datos nutricionales por etiqueta"
           : mode === "meal_photo"
             ? "Estimación guiada de plato por foto + descripción"
+            : mode === "recipes"
+            ? "Tus recetas y alimentos reutilizables"
             : "Búsqueda manual por nombre o marca";
+  const isQuantityScreen = mode === "barcode" && phase === "quantity" && !!product;
+  const addHeaderTitle = isQuantityScreen ? "Añadir alimento" : "Añadir";
+  const addHeaderSubtitle = isQuantityScreen ? "" : subtitle;
+  const scanCameraToPanel = useCallback(() => {
+    resetToHub();
+    props.onBackToPanel();
+  }, [props, resetToHub]);
 
   const showLabelForm = mode === "label_fix" || (mode === "barcode" && phase === "label");
+  const mealPrecision = mealPreview ? mealPrecisionMeta(mealPreview.confidence_level, language) : null;
+  const unknownAnswerLabel = language === "en" ? "I don't know" : "No sé";
+  const mealResultSummary = useMemo(() => {
+    if (!mealPreview) {
+      return null;
+    }
+    const fallback = mealPreview.preview_nutrients;
+    return {
+      kcal: parseMealMacroInput(mealEditable.kcal) ?? fallback.kcal,
+      protein_g: parseMealMacroInput(mealEditable.protein_g) ?? fallback.protein_g,
+      fat_g: parseMealMacroInput(mealEditable.fat_g) ?? fallback.fat_g,
+      carbs_g: parseMealMacroInput(mealEditable.carbs_g) ?? fallback.carbs_g,
+    };
+  }, [mealEditable, mealPreview, parseMealMacroInput]);
+  const mealSourceSheetTranslate = mealSourceSheetAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [300, 0],
+  });
+  const mealSourceSheetScale = mealSourceSheetAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.96, 1],
+  });
+  const mealSourceSheetBackdropOpacity = mealSourceSheetAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, 1],
+  });
 
   return (
     <SafeAreaView style={styles.screen}>
       <View style={styles.scanContainer}>
-        <AppHeader title="Añadir" subtitle={subtitle} />
+        <AppHeader
+          title={addHeaderTitle}
+          subtitle={addHeaderSubtitle}
+          onBack={
+            mode === "barcode" && phase === "camera"
+              ? scanCameraToPanel
+              : mode === "meal_photo" && mealStep === "questions"
+                ? removeMealPhoto
+                : undefined
+          }
+          rightActionLabel={isQuantityScreen ? "Regístralo" : undefined}
+          onRightAction={isQuantityScreen ? () => void saveIntake() : undefined}
+          rightActionDisabled={isQuantityScreen ? saving : undefined}
+        />
 
         {mode === "hub" ? (
           <ScrollView contentContainerStyle={styles.addHubPane}>
@@ -5236,9 +6892,9 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
               onPress={() => void startBarcodeFlow()}
             />
             <AddActionCard
-              title="Corregir etiqueta nutricional"
-              subtitle="Sube foto de etiqueta para actualizar valores"
-              onPress={startLabelFlow}
+              title="Mis recetas"
+              subtitle="Reutiliza tus recetas o productos frecuentes"
+              onPress={startRecipesFlow}
             />
             <AddActionCard
               title="Estimar comida por foto"
@@ -5284,7 +6940,7 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
           </ScrollView>
         ) : null}
 
-        {mode === "barcode" && phase === "camera" ? (
+        {mode === "barcode" && phase === "camera" && props.isActive ? (
           <View style={styles.scanCameraWrap}>
             {hasCamera ? (
               <CameraView
@@ -5341,43 +6997,91 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
           <ScrollView contentContainerStyle={styles.scanPane} keyboardShouldPersistTaps="handled">
             <View style={styles.sectionCard}>
               <Text style={styles.sectionTitle}>
-                {mode === "label_fix" ? "Corregir valores con foto de etiqueta" : "Producto no encontrado o incompleto"}
+                {mode === "label_fix" ? "Corregir valores manualmente" : "Producto no encontrado o incompleto"}
               </Text>
 
-              <InputField
-                label="Barcode (opcional)"
-                value={barcode}
-                onChangeText={(value) => {
-                  setBarcode(value);
-                  setCorrectionPreview(null);
-                }}
-                keyboardType="numeric"
-                placeholder="EAN/UPC"
-              />
-              <InputField
-                label="Nombre"
-                value={labelName}
-                onChangeText={(value) => {
-                  setLabelName(value);
-                  setCorrectionPreview(null);
-                }}
-              />
-              <InputField
-                label="Marca"
-                value={labelBrand}
-                onChangeText={(value) => {
-                  setLabelBrand(value);
-                  setCorrectionPreview(null);
-                }}
-              />
-              <InputField
-                label="Texto etiqueta (opcional)"
-                value={labelText}
-                onChangeText={(value) => {
-                  setLabelText(value);
-                  setCorrectionPreview(null);
-                }}
-              />
+              {mode === "label_fix" ? (
+                <>
+                  <Text style={styles.helperText}>Producto seleccionado (no editable):</Text>
+                  <ReadOnlyField label="Barcode" value={barcode || "Sin barcode"} />
+                  <ReadOnlyField label="Nombre" value={labelName || "Sin nombre"} />
+                  <ReadOnlyField label="Marca" value={labelBrand || "Sin marca"} />
+                  <Text style={styles.helperText}>Introduce solo valores por 100 g:</Text>
+                  <InputField
+                    label="kcal"
+                    value={labelFixKcal}
+                    onChangeText={(value) => {
+                      setLabelFixKcal(value);
+                      setCorrectionPreview(null);
+                    }}
+                    keyboardType="numeric"
+                  />
+                  <InputField
+                    label="Proteína (g)"
+                    value={labelFixProtein}
+                    onChangeText={(value) => {
+                      setLabelFixProtein(value);
+                      setCorrectionPreview(null);
+                    }}
+                    keyboardType="numeric"
+                  />
+                  <InputField
+                    label="Grasas (g)"
+                    value={labelFixFat}
+                    onChangeText={(value) => {
+                      setLabelFixFat(value);
+                      setCorrectionPreview(null);
+                    }}
+                    keyboardType="numeric"
+                  />
+                  <InputField
+                    label="Carbohidratos (g)"
+                    value={labelFixCarbs}
+                    onChangeText={(value) => {
+                      setLabelFixCarbs(value);
+                      setCorrectionPreview(null);
+                    }}
+                    keyboardType="numeric"
+                  />
+                </>
+              ) : (
+                <>
+                  <InputField
+                    label="Barcode"
+                    value={barcode}
+                    onChangeText={(value) => {
+                      setBarcode(value);
+                      setCorrectionPreview(null);
+                    }}
+                    keyboardType="numeric"
+                    placeholder="EAN/UPC"
+                  />
+                  <InputField
+                    label="Nombre"
+                    value={labelName}
+                    onChangeText={(value) => {
+                      setLabelName(value);
+                      setCorrectionPreview(null);
+                    }}
+                  />
+                  <InputField
+                    label="Marca"
+                    value={labelBrand}
+                    onChangeText={(value) => {
+                      setLabelBrand(value);
+                      setCorrectionPreview(null);
+                    }}
+                  />
+                  <InputField
+                    label="Texto etiqueta (opcional)"
+                    value={labelText}
+                    onChangeText={(value) => {
+                      setLabelText(value);
+                      setCorrectionPreview(null);
+                    }}
+                  />
+                </>
+              )}
 
               {labelQuestions.map((question) => (
                 <Text key={question} style={styles.helperText}>
@@ -5385,8 +7089,12 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
                 </Text>
               ))}
 
-              <SecondaryButton title="Tomar foto de etiqueta" onPress={() => void captureLabelPhoto()} />
-              <Text style={styles.helperText}>{labelPhotos.length} foto(s) adjuntas</Text>
+              {mode !== "label_fix" ? (
+                <>
+                  <SecondaryButton title="Tomar foto de etiqueta" onPress={() => void captureLabelPhoto()} />
+                  <Text style={styles.helperText}>{labelPhotos.length} foto(s) adjuntas</Text>
+                </>
+              ) : null}
 
               <PrimaryButton
                 title={mode === "label_fix" ? "Analizar corrección" : "Crear producto"}
@@ -5396,9 +7104,6 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
               {mode === "label_fix" && correctionPreview ? (
                 <AppCard style={styles.previewCard}>
                   <SectionHeader title="Comparación" subtitle={correctionPreview.message} />
-                  <Text style={styles.helperText}>
-                    Método de análisis: {correctionPreview.analysis_method === "ai_vision" ? "IA visión" : "OCR clásico"}
-                  </Text>
                   <Text style={styles.helperText}>
                     kcal actual/detectado: {Math.round(correctionPreview.current.kcal ?? 0)} /{" "}
                     {Math.round(correctionPreview.detected.kcal ?? 0)}
@@ -5433,7 +7138,6 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
                   />
                 </AppCard>
               ) : null}
-              <SecondaryButton title="Volver" onPress={resetToHub} disabled={saving} />
             </View>
           </ScrollView>
         ) : null}
@@ -5443,22 +7147,56 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
             {mealStep === "compose" ? (
               <ScrollView contentContainerStyle={styles.scanPane} keyboardShouldPersistTaps="handled">
                 <View style={styles.sectionCard}>
-                  <Text style={styles.sectionTitle}>Estimar comida por foto</Text>
-                  <Text style={styles.helperText}>1) Sube una foto 2) revisa preview 3) genera preguntas.</Text>
-                  {mealPhotos[0] ? (
-                    <View style={styles.mealPhotoPreviewWrap}>
+                  <Text style={styles.sectionTitle}>Analizar comida con IA</Text>
+                  <Text style={styles.helperText}>1) Añade hasta 3 fotos 2) responde preguntas 3) revisa la estimación.</Text>
+                  {mealPhotos.length > 0 ? (
+                    <Pressable
+                      onPress={openMealSourceSheet}
+                      style={({ pressed }) => [styles.mealPhotoPreviewWrap, pressed && styles.mealPhotoPressablePressed]}
+                    >
                       <Image source={{ uri: mealPhotos[0] }} style={styles.mealPhotoPreviewImage} resizeMode="contain" />
-                    </View>
+                      <View style={styles.mealPhotoCountBadge}>
+                        <Text style={styles.mealPhotoCountBadgeText}>
+                          {mealPhotos.length}/{MAX_MEAL_PHOTOS}
+                        </Text>
+                      </View>
+                      {mealPhotos.length > 1 ? (
+                        <View style={styles.mealPhotoThumbStrip}>
+                          {mealPhotos.map((uri, index) => (
+                            <Image
+                              key={`${uri}-${index}`}
+                              source={{ uri }}
+                              style={[styles.mealPhotoThumb, index === 0 && styles.mealPhotoThumbPrimary]}
+                              resizeMode="cover"
+                            />
+                          ))}
+                        </View>
+                      ) : null}
+                    </Pressable>
                   ) : (
-                    <View style={styles.mealPhotoPreviewEmpty}>
-                      <Text style={styles.helperText}>Aún no hay foto seleccionada.</Text>
-                    </View>
+                    <Pressable
+                      onPress={openMealSourceSheet}
+                      style={({ pressed }) => [styles.mealPhotoGuideCard, pressed && styles.mealPhotoPressablePressed]}
+                    >
+                      <View style={styles.mealPhotoGuideIconWrap}>
+                        <Svg width={28} height={28} viewBox="0 0 24 24" fill="none">
+                          <Rect x={3} y={6} width={18} height={13} rx={3} stroke={theme.accent} strokeWidth={1.9} />
+                          <Circle cx={12} cy={12.5} r={3.2} stroke={theme.accent} strokeWidth={1.9} />
+                          <Rect x={7.2} y={4.2} width={3.8} height={2.5} rx={1} fill={theme.accent} />
+                        </Svg>
+                      </View>
+                      <Text style={styles.mealPhotoGuideTitle}>Añade una foto del plato</Text>
+                      <Text style={styles.mealPhotoGuideText}>
+                        Mejor precisión con buena luz y el plato completo visible.
+                      </Text>
+                    </Pressable>
                   )}
-                  <View style={styles.portionQuickRow}>
-                    <SecondaryButton title={mealPhotos[0] ? "Cambiar foto" : "Tomar foto"} onPress={() => void captureMealPhoto()} />
-                    <SecondaryButton title="Subir imagen" onPress={() => void pickMealPhotoFromLibrary()} />
-                  </View>
-                  {mealPhotos[0] ? <SecondaryButton title="Eliminar foto" onPress={removeMealPhoto} /> : null}
+                  {mealPhotos.length > 0 ? (
+                    <SecondaryButton
+                      title={mealPhotos.length > 1 ? "Eliminar fotos" : "Eliminar foto"}
+                      onPress={removeMealPhoto}
+                    />
+                  ) : null}
                   <InputField
                     label="Descripción (opcional)"
                     value={mealDescription}
@@ -5468,9 +7206,48 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
                     }}
                     placeholder="Describe la comida (ej: arroz con pollo y mayonesa)"
                   />
+                  <InputField
+                    label="Peso total del plato (g, opcional)"
+                    value={mealPlateWeight}
+                    onChangeText={(value) => {
+                      setMealPlateWeight(value);
+                      setMealPreview(null);
+                    }}
+                    keyboardType="numeric"
+                    placeholder="Ej: 420"
+                  />
                   <Text style={styles.helperText}>Una breve descripción mejora la precisión.</Text>
-                  <PrimaryButton title="Generar preguntas" onPress={() => void runMealQuestions()} loading={saving} disabled={!mealPhotos[0]} />
-                  <SecondaryButton title="Volver" onPress={resetToHub} disabled={saving} />
+                  <Pressable
+                    onPress={() => void runMealQuestions()}
+                    disabled={saving || mealPhotos.length === 0}
+                    style={[styles.primaryButton, (saving || mealPhotos.length === 0) && styles.disabledButton]}
+                  >
+                    {saving && mealQuestionPhase ? (
+                      <View style={styles.mealQuestionProgressButtonContent}>
+                        <View style={styles.mealQuestionProgressRingWrap}>
+                          <Svg width={34} height={34} viewBox="0 0 34 34" fill="none">
+                            <Circle cx={17} cy={17} r={14.5} stroke={theme.panel} strokeWidth={3.2} />
+                            <Circle
+                              cx={17}
+                              cy={17}
+                              r={14.5}
+                              stroke={theme.bg}
+                              strokeWidth={3.2}
+                              strokeLinecap="round"
+                              strokeDasharray={91.11}
+                              strokeDashoffset={91.11 * (1 - Math.max(0, Math.min(100, mealQuestionProgress)) / 100)}
+                              transform="rotate(-90 17 17)"
+                            />
+                          </Svg>
+                          <Text style={styles.mealQuestionProgressPercent}>{Math.round(mealQuestionProgress)}%</Text>
+                        </View>
+                        <Text style={styles.primaryButtonText}>Generando</Text>
+                      </View>
+                    ) : (
+                      <Text style={styles.primaryButtonText}>Generar preguntas</Text>
+                    )}
+                  </Pressable>
+                  {saving && mealQuestionPhase ? <Text style={styles.mealQuestionProgressPhase}>{mealQuestionPhase}</Text> : null}
                 </View>
               </ScrollView>
             ) : null}
@@ -5479,19 +7256,23 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
               <View style={styles.mealQuestionScreen}>
                 <ScrollView contentContainerStyle={styles.mealQuestionContent} keyboardShouldPersistTaps="handled">
                   <View style={styles.sectionCard}>
-                    <Text style={styles.sectionTitle}>Ayúdame a afinar la estimación</Text>
-                    <Text style={styles.helperText}>Responde 2-3 preguntas para mejorar la precisión.</Text>
+                    <Text style={styles.sectionTitle}>{tx("Ayúdame a afinar la estimación")}</Text>
+                    <Text style={styles.helperText}>{tx("Responde 2-3 preguntas para mejorar la precisión.")}</Text>
                   </View>
                   {mealQuestions.map((question) => (
                     <View key={question.id} style={styles.mealQuestionCard}>
                       <Text style={styles.mealQuestionPrompt}>{question.prompt}</Text>
                       {question.answer_type === "single_choice" ? (
                         <View style={styles.methodRow}>
-                          {question.options.map((option) => {
-                            const active = (mealQuestionAnswers[question.id] ?? "") === option;
+                          {(question.options.some((option) => isUnknownAnswer(option))
+                            ? question.options
+                            : [...question.options, unknownAnswerLabel]
+                          ).map((option, index) => {
+                            const active =
+                              normalizeAnswerToken(mealQuestionAnswers[question.id] ?? "") === normalizeAnswerToken(option);
                             return (
                               <Pressable
-                                key={`${question.id}-${option}`}
+                                key={`${question.id}-${option}-${index}`}
                                 style={[styles.methodChip, active && styles.methodChipActive]}
                                 onPress={() =>
                                   setMealQuestionAnswers((current) => ({
@@ -5516,18 +7297,42 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
                           }
                           keyboardType={question.answer_type === "number" ? "numeric" : "default"}
                           style={styles.quantityInput}
-                          placeholder={question.placeholder ?? "Respuesta"}
+                          placeholder={question.placeholder ?? tx("Respuesta")}
                           placeholderTextColor={theme.muted}
                         />
                       )}
+                      {question.answer_type !== "single_choice" ? (
+                        <View style={styles.methodRow}>
+                          <Pressable
+                            style={[
+                              styles.methodChip,
+                              isUnknownAnswer(mealQuestionAnswers[question.id] ?? "") && styles.methodChipActive,
+                            ]}
+                            onPress={() =>
+                              setMealQuestionAnswers((current) => ({
+                                ...current,
+                                [question.id]: unknownAnswerLabel,
+                              }))
+                            }
+                          >
+                            <Text
+                              style={[
+                                styles.methodChipText,
+                                isUnknownAnswer(mealQuestionAnswers[question.id] ?? "") && styles.methodChipTextActive,
+                              ]}
+                            >
+                              {unknownAnswerLabel}
+                            </Text>
+                          </Pressable>
+                        </View>
+                      ) : null}
                     </View>
                   ))}
                   {mealIngredients.length > 0 ? (
-                    <Text style={styles.helperText}>Detectado: {mealIngredients.join(", ")}</Text>
+                    <Text style={styles.helperText}>{tx("Detectado: {{ingredients}}", { ingredients: mealIngredients.join(", ") })}</Text>
                   ) : null}
                 </ScrollView>
                 <View style={styles.bottomActionBar}>
-                  <SecondaryButton title="Volver" onPress={() => setMealStep("compose")} disabled={saving} />
                   <PrimaryButton
                     title="Calcular estimación"
                     onPress={() => void runMealPreview()}
@@ -5541,53 +7346,66 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
             {mealStep === "result" && mealPreview ? (
               <ScrollView contentContainerStyle={styles.scanPane} keyboardShouldPersistTaps="handled">
                 <View style={styles.sectionCard}>
-                  <Text style={styles.sectionTitle}>Estimación nutricional</Text>
-                  <TagChip
-                    label={`Confianza ${mealPreview.confidence_level}`}
-                    tone={mealPreview.confidence_level === "high" ? "accent" : mealPreview.confidence_level === "low" ? "danger" : "warning"}
-                  />
+                  <Text style={styles.sectionTitle}>{tx("Estimación nutricional")}</Text>
+                  {mealPrecision ? (
+                    <View style={styles.mealPrecisionCard}>
+                      <View style={styles.mealPrecisionHeader}>
+                        <Text style={styles.mealPrecisionLabel}>{tx("Precisión estimada")}</Text>
+                        <TagChip label={mealPrecision.label} tone={mealPrecision.tone} />
+                      </View>
+                      <View style={styles.mealPrecisionValueRow}>
+                        <Text style={[styles.mealPrecisionValue, { color: mealPrecision.color }]}>{mealPrecision.percent}%</Text>
+                        <Text style={styles.mealPrecisionMetaText}>{tx("Basado en foto y respuestas")}</Text>
+                      </View>
+                      <View style={styles.mealPrecisionTrack}>
+                        <View
+                          style={[
+                            styles.mealPrecisionFill,
+                            { width: `${mealPrecision.percent}%`, backgroundColor: mealPrecision.color },
+                          ]}
+                        />
+                      </View>
+                    </View>
+                  ) : null}
                   {mealPhotos[0] ? <Image source={{ uri: mealPhotos[0] }} style={styles.mealResultImage} resizeMode="cover" /> : null}
-                  <TagChip label="Estimado (no exacto)" tone="warning" />
-                  <View style={styles.mealMetricsGrid}>
-                    <View style={styles.mealMetricCard}>
-                      <Text style={styles.mealMetricLabel}>kcal</Text>
-                      <Text style={[styles.mealMetricValue, { color: theme.kcal }]}>
-                        {Math.round(mealPreview.preview_nutrients.kcal)}
-                      </Text>
-                    </View>
-                    <View style={styles.mealMetricCard}>
-                      <Text style={styles.mealMetricLabel}>proteína</Text>
-                      <Text style={[styles.mealMetricValue, { color: theme.protein }]}>
-                        {Math.round(mealPreview.preview_nutrients.protein_g)} g
-                      </Text>
-                    </View>
-                    <View style={styles.mealMetricCard}>
-                      <Text style={styles.mealMetricLabel}>grasas</Text>
-                      <Text style={[styles.mealMetricValue, { color: theme.fats }]}>
-                        {Math.round(mealPreview.preview_nutrients.fat_g)} g
-                      </Text>
-                    </View>
-                    <View style={styles.mealMetricCard}>
-                      <Text style={styles.mealMetricLabel}>carbs</Text>
-                      <Text style={[styles.mealMetricValue, { color: theme.carbs }]}>
-                        {Math.round(mealPreview.preview_nutrients.carbs_g)} g
-                      </Text>
-                    </View>
+                  <TagChip label={tx("Estimado (no exacto)")} tone="warning" />
+                  {mealResultSummary ? (
+                    <AddQuantityMacroSummary
+                      kcal={mealResultSummary.kcal}
+                      protein={mealResultSummary.protein_g}
+                      carbs={mealResultSummary.carbs_g}
+                      fats={mealResultSummary.fat_g}
+                    />
+                  ) : null}
+                  <Text style={styles.helperText}>{tx("Puedes ajustar los valores antes de guardar.")}</Text>
+                  <View style={styles.mealEditableGrid}>
+                    <InputField
+                      label={tx("Kcal")}
+                      value={mealEditable.kcal}
+                      onChangeText={(value) => setMealEditable((current) => ({ ...current, kcal: value }))}
+                      keyboardType="numeric"
+                    />
+                    <InputField
+                      label={tx("Proteína (g)")}
+                      value={mealEditable.protein_g}
+                      onChangeText={(value) => setMealEditable((current) => ({ ...current, protein_g: value }))}
+                      keyboardType="numeric"
+                    />
+                    <InputField
+                      label={tx("Carbohidratos (g)")}
+                      value={mealEditable.carbs_g}
+                      onChangeText={(value) => setMealEditable((current) => ({ ...current, carbs_g: value }))}
+                      keyboardType="numeric"
+                    />
+                    <InputField
+                      label={tx("Grasas (g)")}
+                      value={mealEditable.fat_g}
+                      onChangeText={(value) => setMealEditable((current) => ({ ...current, fat_g: value }))}
+                      keyboardType="numeric"
+                    />
                   </View>
-                  <View style={styles.portionQuickRow}>
-                    <Pressable style={styles.portionQuickChip} onPress={() => void runMealPreview(-10)}>
-                      <Text style={styles.portionQuickChipText}>-10%</Text>
-                    </Pressable>
-                    <Pressable style={styles.portionQuickChip} onPress={() => void runMealPreview(0)}>
-                      <Text style={styles.portionQuickChipText}>OK</Text>
-                    </Pressable>
-                    <Pressable style={styles.portionQuickChip} onPress={() => void runMealPreview(10)}>
-                      <Text style={styles.portionQuickChipText}>+10%</Text>
-                    </Pressable>
-                  </View>
-                  <Text style={styles.helperText}>Ajuste actual: {mealAdjust > 0 ? `+${mealAdjust}` : mealAdjust}%</Text>
                   {mealIngredients.length ? (
-                    <Text style={styles.helperText}>Estimado a partir de: {mealIngredients.join(", ")}</Text>
+                    <Text style={styles.helperText}>{tx("Estimado a partir de: {{ingredients}}", { ingredients: mealIngredients.join(", ") })}</Text>
                   ) : null}
                   {mealAssumptions.length
                     ? mealAssumptions.map((assumption) => (
@@ -5598,7 +7416,6 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
                     : null}
                   <PrimaryButton title="Guardar consumo" onPress={() => void saveMealEstimate()} loading={saving} />
                   <SecondaryButton title="Cambiar foto" onPress={() => setMealStep("compose")} disabled={saving} />
-                  <SecondaryButton title="Volver a Añadir" onPress={resetToHub} disabled={saving} />
                 </View>
               </ScrollView>
             ) : null}
@@ -5622,7 +7439,11 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
                 placeholder="Ej: Danone natural"
               />
               <Text style={styles.helperText}>Escribe el nombre y buscamos coincidencias por nombre o marca (no exactas).</Text>
-              <PrimaryButton title="Buscar por nombre" onPress={() => void searchManualFoods()} loading={searchingFoods} />
+              <PrimaryButton
+                title="Buscar por nombre"
+                onPress={() => void searchManualFoods(undefined, { force: true })}
+                loading={searchingFoods}
+              />
               {manualResults.length ? (
                 <View style={styles.searchResultsWrap}>
                   {manualResults.map((item) => (
@@ -5631,13 +7452,6 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
                       style={styles.searchResultRow}
                       onPress={() => void selectManualResult(item)}
                     >
-                      {item.product.image_url ? (
-                        <Image source={{ uri: item.product.image_url }} style={styles.searchResultImage} resizeMode="cover" />
-                      ) : (
-                        <View style={styles.searchResultImagePlaceholder}>
-                          <Text style={styles.searchResultImagePlaceholderText}>IMG</Text>
-                        </View>
-                      )}
                       <View style={styles.searchResultTextWrap}>
                         <Text style={styles.searchResultTitle}>{item.product.name}</Text>
                         <Text style={styles.searchResultSubtitle}>
@@ -5647,6 +7461,7 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
                       <View style={styles.searchResultBadgeWrap}>
                         <TagChip label={item.badge} tone={searchBadgeTone(item.badge)} />
                         {isUserCreatedProduct(item) ? <TagChip label="Creado por usuario" tone="default" /> : null}
+                        <Text style={styles.inlineRowChevron}>›</Text>
                       </View>
                     </Pressable>
                   ))}
@@ -5668,21 +7483,6 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
               {showManualCreateForm ? (
                 <>
                   <InputField label="Nombre" value={manualName} onChangeText={setManualName} placeholder="Producto manual" />
-                  <InputField label="Marca (opcional)" value={manualBrand} onChangeText={setManualBrand} />
-                  <InputField
-                    label="Barcode opcional"
-                    value={manualBarcode}
-                    onChangeText={setManualBarcode}
-                    keyboardType="numeric"
-                    placeholder="EAN/UPC"
-                  />
-                  <InputField
-                    label="URL foto (opcional)"
-                    value={manualImageUrl}
-                    onChangeText={setManualImageUrl}
-                    autoCapitalize="none"
-                    placeholder="https://..."
-                  />
                   <InputField label="Kcal por 100 g" value={manualKcal} onChangeText={setManualKcal} keyboardType="numeric" />
                   <InputField
                     label="Proteína por 100 g"
@@ -5695,7 +7495,56 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
                   <PrimaryButton title="Guardar y compartir" onPress={() => void saveManualProduct()} loading={saving} />
                 </>
               ) : null}
-              <SecondaryButton title="Volver" onPress={resetToHub} disabled={saving} />
+            </View>
+          </ScrollView>
+        ) : null}
+
+        {mode === "recipes" ? (
+          <ScrollView contentContainerStyle={styles.scanPane} keyboardShouldPersistTaps="handled">
+            <View style={styles.sectionCard}>
+              <Text style={styles.sectionTitle}>Mis recetas</Text>
+              <Text style={styles.helperText}>Aquí ves los productos que has creado tú.</Text>
+              <PrimaryButton title="Crear receta" onPress={startManualCreateFlow} />
+
+              {loadingMyRecipes ? (
+                <ActivityIndicator color={theme.accent} />
+              ) : null}
+
+              {myRecipeProducts.length ? (
+                <View style={styles.recipePreviewList}>
+                  {myRecipeProducts.map((item) => (
+                    <Pressable
+                      key={item.id}
+                      style={styles.recipePreviewRow}
+                      onPress={() => openProductInQuantity(item, "recipes")}
+                    >
+                      {item.image_url ? (
+                        <Image source={{ uri: item.image_url }} style={styles.recipePreviewImage} resizeMode="cover" />
+                      ) : (
+                        <View style={styles.recipePreviewImagePlaceholder}>
+                          <Text style={styles.recipePreviewImagePlaceholderText}>R</Text>
+                        </View>
+                      )}
+                      <View style={styles.recipePreviewTextWrap}>
+                        <Text style={styles.recipePreviewTitle}>{item.name}</Text>
+                        <Text style={styles.recipePreviewSubtitle}>{item.brand ?? "Sin marca"}</Text>
+                        <Text style={styles.recipePreviewMacroLine}>
+                          {Math.round(item.kcal)} kcal · P {Math.round(item.protein_g * 10) / 10} · C{" "}
+                          {Math.round(item.carbs_g * 10) / 10} · G {Math.round(item.fat_g * 10) / 10}
+                        </Text>
+                      </View>
+                      <Text style={styles.inlineRowChevron}>›</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              ) : null}
+
+              {!loadingMyRecipes && !myRecipeProducts.length ? (
+                <EmptyState
+                  title="Sin recetas todavía"
+                  subtitle="Crea tu primer producto y aparecerá aquí automáticamente."
+                />
+              ) : null}
             </View>
           </ScrollView>
         ) : null}
@@ -5704,21 +7553,14 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
           <ScrollView contentContainerStyle={styles.scanPane} keyboardShouldPersistTaps="handled">
             <View style={styles.sectionCard}>
               <Text style={styles.sectionTitle}>{product.name}</Text>
-              <Text style={styles.helperText}>Marca: {product.brand ?? "-"}</Text>
-              {product.image_url ? (
+              <Text style={styles.helperText}>{tx("Marca: {{brand}}", { brand: product.brand ?? "-" })}</Text>
+              {showScannedProductImage && product.image_url ? (
                 <Image source={{ uri: product.image_url }} style={styles.productImage} resizeMode="contain" />
-              ) : (
-                <View style={styles.productImagePlaceholder}>
-                  <Text style={styles.helperText}>Sin foto disponible para este producto</Text>
-                </View>
-              )}
-              <Text style={styles.helperText}>
-                {product.kcal} kcal | P {product.protein_g} | G {product.fat_g} | C {product.carbs_g} ({product.nutrition_basis})
-              </Text>
+              ) : null}
               {productQuality ? (
                 <>
                   <TagChip
-                    label={`Calidad: ${productQuality.label}`}
+                    label={tx("Calidad: {{quality}}", { quality: productQuality.label })}
                     tone={
                       productQuality.status === "verified"
                         ? "accent"
@@ -5730,8 +7572,21 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
                   <Text style={styles.helperText}>{productQuality.message}</Text>
                 </>
               ) : null}
+              {showScannedProductImage ? (
+                <View style={styles.correctionCallout}>
+                  <View style={styles.correctionCalloutHeader}>
+                    <Text style={styles.correctionCalloutTitle}>¿Etiqueta desactualizada?</Text>
+                    <Text style={styles.correctionCalloutText}>Puedes corregir valores con una foto de la etiqueta.</Text>
+                  </View>
+                  <SecondaryButton
+                    title="Corregir valores manualmente"
+                    onPress={openCorrectionFromProduct}
+                    disabled={saving}
+                  />
+                </View>
+              ) : null}
 
-              <QuantityMethodSelector method={method} onChange={setMethod} product={product} />
+              <QuantityMethodSelector method={method} onChange={handleQuantityMethodChange} product={product} />
 
               {method === "grams" ? (
                 <View style={styles.sliderWrap}>
@@ -5741,7 +7596,10 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
                     maximumValue={500}
                     step={5}
                     value={grams}
-                    onValueChange={setGrams}
+                    onValueChange={(value) => {
+                      setUseDefaultSummary100g(false);
+                      setGrams(value);
+                    }}
                     minimumTrackTintColor={theme.accent}
                     maximumTrackTintColor={theme.border}
                     thumbTintColor={theme.accent}
@@ -5751,6 +7609,7 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
                     onChangeText={(value) => {
                       const parsed = Number(value);
                       if (Number.isFinite(parsed)) {
+                        setUseDefaultSummary100g(false);
                         setGrams(clamp(parsed, 1, 2000));
                       }
                     }}
@@ -5779,7 +7638,10 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
                     maximumValue={12}
                     step={0.25}
                     value={units}
-                    onValueChange={setUnits}
+                    onValueChange={(value) => {
+                      setUseDefaultSummary100g(false);
+                      setUnits(value);
+                    }}
                     minimumTrackTintColor={theme.accent}
                     maximumTrackTintColor={theme.border}
                     thumbTintColor={theme.accent}
@@ -5789,6 +7651,7 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
                     onChangeText={(value) => {
                       const parsed = Number(value);
                       if (Number.isFinite(parsed)) {
+                        setUseDefaultSummary100g(false);
                         setUnits(clamp(parsed, 0.25, 12));
                       }
                     }}
@@ -5807,7 +7670,10 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
                     maximumValue={100}
                     step={1}
                     value={percentPack}
-                    onValueChange={setPercentPack}
+                    onValueChange={(value) => {
+                      setUseDefaultSummary100g(false);
+                      setPercentPack(value);
+                    }}
                     minimumTrackTintColor={theme.accent}
                     maximumTrackTintColor={theme.border}
                     thumbTintColor={theme.accent}
@@ -5817,6 +7683,7 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
                     onChangeText={(value) => {
                       const parsed = Number(value);
                       if (Number.isFinite(parsed)) {
+                        setUseDefaultSummary100g(false);
                         setPercentPack(clamp(parsed, 0, 100));
                       }
                     }}
@@ -5827,19 +7694,24 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
                 </View>
               ) : null}
 
-              <AppCard style={styles.previewCard}>
-                <SectionHeader title="Preview nutricional" subtitle={`${Math.round(resolvedQuantityG)} g equivalentes`} />
-                {previewNutrients ? (
-                  <View style={styles.previewRow}>
-                    <StatPill label="kcal" value={String(previewNutrients.kcal)} tone="accent" />
-                    <StatPill label="prote" value={`${previewNutrients.protein} g`} />
-                    <StatPill label="carbs" value={`${previewNutrients.carbs} g`} tone="warning" />
-                    <StatPill label="grasas" value={`${previewNutrients.fats} g`} tone="danger" />
-                  </View>
-                ) : (
-                  <Text style={styles.helperText}>Sin datos para este método/cantidad.</Text>
-                )}
-              </AppCard>
+              <View style={styles.quantitySummaryHeader}>
+                <Text style={styles.quantitySummaryTitle}>Resumen nutricional</Text>
+                <Text style={styles.quantitySummarySub}>
+                  {useDefaultSummary100g
+                    ? "100 g"
+                    : tx("{{quantityG}} g equivalentes", { quantityG: Math.round(resolvedQuantityG) })}
+                </Text>
+              </View>
+              {quantityMacroSummary ? (
+                <AddQuantityMacroSummary
+                  kcal={quantityMacroSummary.kcal}
+                  protein={quantityMacroSummary.protein}
+                  carbs={quantityMacroSummary.carbs}
+                  fats={quantityMacroSummary.fats}
+                />
+              ) : (
+                <Text style={styles.helperText}>Sin datos para este método/cantidad.</Text>
+              )}
 
               <PrimaryButton title="Guardar consumo" onPress={() => void saveIntake()} loading={saving} />
               {preferredServing ? (
@@ -5854,11 +7726,70 @@ function AddScreen(props: { launchAction: AddLaunchAction | null; onLaunchAction
                 onPress={() => void toggleFavoriteForCurrentProduct()}
                 disabled={saving}
               />
-              <SecondaryButton title="Corregir valores con foto de etiqueta" onPress={openCorrectionFromProduct} disabled={saving} />
               <SecondaryButton title="Escanear otro" onPress={() => void startBarcodeFlow()} disabled={saving} />
-              <SecondaryButton title="Volver a Añadir" onPress={resetToHub} disabled={saving} />
             </View>
           </ScrollView>
+        ) : null}
+
+        {mealSourceSheetVisible ? (
+          <View style={styles.mealSourceSheetLayer} pointerEvents="box-none">
+            <Pressable style={styles.mealSourceSheetBackdrop} onPress={() => closeMealSourceSheet()}>
+              <Animated.View style={[styles.mealSourceSheetScrim, { opacity: mealSourceSheetBackdropOpacity }]} />
+            </Pressable>
+            <Animated.View
+              pointerEvents="box-none"
+              style={[
+                styles.mealSourceSheetContainer,
+                {
+                  opacity: mealSourceSheetAnim,
+                  transform: [{ translateY: mealSourceSheetTranslate }, { scale: mealSourceSheetScale }],
+                },
+              ]}
+            >
+              <Pressable style={styles.mealSourceSheetCard} onPress={() => {}}>
+                <Text style={styles.mealSourceSheetTitle}>Selecciona una opción</Text>
+                <View style={styles.mealSourceSheetOptions}>
+                  <Pressable
+                    style={styles.mealSourceSheetOption}
+                    onPress={() =>
+                      closeMealSourceSheet(() => {
+                        void captureMealPhoto();
+                      })
+                    }
+                  >
+                    <View style={styles.mealSourceSheetOptionIconWrap}>
+                      <Svg width={22} height={22} viewBox="0 0 24 24" fill="none">
+                        <Rect x={3} y={6} width={18} height={13} rx={3} stroke={theme.text} strokeWidth={1.8} />
+                        <Circle cx={12} cy={12.5} r={3.2} stroke={theme.text} strokeWidth={1.8} />
+                        <Rect x={7.2} y={4.2} width={3.8} height={2.5} rx={1} fill={theme.text} />
+                      </Svg>
+                    </View>
+                    <Text style={styles.mealSourceSheetOptionTitle}>Tomar foto</Text>
+                    <Text style={styles.mealSourceSheetOptionSubtitle}>Usar la cámara</Text>
+                  </Pressable>
+
+                  <Pressable
+                    style={styles.mealSourceSheetOption}
+                    onPress={() =>
+                      closeMealSourceSheet(() => {
+                        void pickMealPhotoFromLibrary();
+                      })
+                    }
+                  >
+                    <View style={styles.mealSourceSheetOptionIconWrap}>
+                      <Svg width={22} height={22} viewBox="0 0 24 24" fill="none">
+                        <Rect x={4} y={5} width={16} height={14} rx={2.5} stroke={theme.text} strokeWidth={1.8} />
+                        <Circle cx={9} cy={10} r={1.7} fill={theme.text} />
+                        <Path d="M6.5 16l3.4-3.3 2.4 2.2 2.4-2.2 2.8 3.3" stroke={theme.text} strokeWidth={1.8} strokeLinecap="round" />
+                      </Svg>
+                    </View>
+                    <Text style={styles.mealSourceSheetOptionTitle}>Subir imagen</Text>
+                    <Text style={styles.mealSourceSheetOptionSubtitle}>Elegir hasta 3 de galería</Text>
+                  </Pressable>
+                </View>
+              </Pressable>
+            </Animated.View>
+          </View>
         ) : null}
       </View>
       {toastFeedback ? <ToastFeedback kind={toastFeedback.kind} message={toastFeedback.message} /> : null}
@@ -5884,11 +7815,12 @@ function BottomTabIcon(props: { tab: Exclude<MainTab, "add">; active: boolean })
   if (props.tab === "body") {
     return (
       <Svg width={22} height={22} viewBox="0 0 24 24" fill="none">
-        <Circle cx={12} cy={5.3} r={2.2} stroke={color} strokeWidth={strokeWidth} />
-        <Line x1={12} y1={7.8} x2={12} y2={14.3} stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" />
-        <Line x1={8.5} y1={10.6} x2={15.5} y2={10.6} stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" />
-        <Line x1={10.3} y1={14.3} x2={10.3} y2={19.3} stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" />
-        <Line x1={13.7} y1={14.3} x2={13.7} y2={19.3} stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" />
+        <Circle cx={12} cy={5.6} r={3.15} stroke={color} strokeWidth={strokeWidth} />
+        <Line x1={12} y1={8.8} x2={12} y2={14.8} stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" />
+        <Line x1={12} y1={9.8} x2={7.8} y2={14.2} stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" />
+        <Line x1={12} y1={9.8} x2={16.2} y2={14.2} stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" />
+        <Line x1={12} y1={14.8} x2={8.6} y2={20.2} stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" />
+        <Line x1={12} y1={14.8} x2={15.4} y2={20.2} stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" />
       </Svg>
     );
   }
@@ -5946,6 +7878,16 @@ function QuickAddIcon(props: { action: QuickAddAction }) {
       </Svg>
     );
   }
+  if (props.action === "recipes") {
+    return (
+      <Svg width={26} height={26} viewBox="0 0 24 24" fill="none">
+        <Rect x={4} y={4} width={16} height={16} rx={3} stroke="#0b1220" strokeWidth={2} />
+        <Line x1={8} y1={9} x2={16} y2={9} stroke="#0b1220" strokeWidth={2} strokeLinecap="round" />
+        <Line x1={8} y1={13} x2={16} y2={13} stroke="#0b1220" strokeWidth={2} strokeLinecap="round" />
+        <Line x1={8} y1={17} x2={13} y2={17} stroke="#0b1220" strokeWidth={2} strokeLinecap="round" />
+      </Svg>
+    );
+  }
   return (
     <Svg width={26} height={26} viewBox="0 0 24 24" fill="none">
       <Rect x={5} y={4} width={14} height={16} rx={2.3} stroke="#0b1220" strokeWidth={2} />
@@ -5969,18 +7911,114 @@ function QuickAddCard(props: { action: QuickAddAction; title: string; subtitle: 
 
 function MainAppTabs() {
   const [tab, setTab] = useState<MainTab>("dashboard");
+  const [visitedTabs, setVisitedTabs] = useState<Record<MainTab, boolean>>({
+    dashboard: true,
+    body: false,
+    add: false,
+    history: false,
+    settings: false,
+  });
   const [quickAddOpen, setQuickAddOpen] = useState(false);
   const [quickAddVisible, setQuickAddVisible] = useState(false);
+  const [hideTabBarForOverlay, setHideTabBarForOverlay] = useState(false);
+  const [hideTabBarForScanCamera, setHideTabBarForScanCamera] = useState(false);
+  const [hideTabBarForMealQuestions, setHideTabBarForMealQuestions] = useState(false);
+  const [transitionFromTab, setTransitionFromTab] = useState<MainTab | null>(null);
+  const [tabTransitioning, setTabTransitioning] = useState(false);
   const [launchAction, setLaunchAction] = useState<AddLaunchAction | null>(null);
   const quickAddAnim = useRef(new Animated.Value(0)).current;
+  const tabBarAnim = useRef(new Animated.Value(1)).current;
+  const sceneOpacityRef = useRef<Record<MainTab, Animated.Value>>({
+    dashboard: new Animated.Value(1),
+    body: new Animated.Value(0),
+    add: new Animated.Value(0),
+    history: new Animated.Value(0),
+    settings: new Animated.Value(0),
+  });
+  const tabSwitchingRef = useRef(false);
+  const activeTabRef = useRef<MainTab>("dashboard");
+  const shouldHideTabBar = tab === "add" && (hideTabBarForOverlay || hideTabBarForScanCamera || hideTabBarForMealQuestions);
 
   const tabs: Array<{ value: MainTab; label: string; center?: boolean }> = [
     { value: "dashboard", label: "Panel" },
-    { value: "body", label: "Body" },
+    { value: "body", label: "Cuerpo" },
     { value: "add", label: "", center: true },
     { value: "history", label: "Historial" },
     { value: "settings", label: "Ajustes" },
   ];
+
+  const setSceneVisibilityInstant = useCallback((active: MainTab) => {
+    const scenes = sceneOpacityRef.current;
+    (Object.keys(scenes) as MainTab[]).forEach((key) => {
+      scenes[key].setValue(key === active ? 1 : 0);
+    });
+  }, []);
+
+  const setTabWithFade = useCallback(
+    (nextTab: MainTab) => {
+      const currentTab = activeTabRef.current;
+      if (nextTab === currentTab) {
+        return;
+      }
+
+      if (tabSwitchingRef.current) {
+        return;
+      }
+
+      const shouldAnimate = currentTab !== "add" && nextTab !== "add";
+      if (!shouldAnimate) {
+        setTab(nextTab);
+        activeTabRef.current = nextTab;
+        setTransitionFromTab(null);
+        setTabTransitioning(false);
+        setSceneVisibilityInstant(nextTab);
+        return;
+      }
+
+      setVisitedTabs((current) => {
+        if (current[nextTab]) {
+          return current;
+        }
+        return {
+          ...current,
+          [nextTab]: true,
+        };
+      });
+
+      tabSwitchingRef.current = true;
+      setTabTransitioning(true);
+      setTransitionFromTab(currentTab);
+      setTab(nextTab);
+
+      const outgoing = sceneOpacityRef.current[currentTab];
+      const incoming = sceneOpacityRef.current[nextTab];
+      outgoing.stopAnimation();
+      incoming.stopAnimation();
+      incoming.setValue(0);
+
+      Animated.parallel([
+        Animated.timing(outgoing, {
+          toValue: 0,
+          duration: 200,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true,
+        }),
+        Animated.timing(incoming, {
+          toValue: 1,
+          duration: 200,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true,
+        }),
+      ]).start(() => {
+        activeTabRef.current = nextTab;
+        setSceneVisibilityInstant(nextTab);
+        setTransitionFromTab(null);
+        setTabTransitioning(false);
+        tabSwitchingRef.current = false;
+      });
+    },
+    [setSceneVisibilityInstant],
+  );
 
   const openQuickAdd = useCallback(() => {
     if (quickAddOpen) {
@@ -6023,7 +8061,7 @@ function MainAppTabs() {
 
   const runQuickAction = (action: QuickAddAction) => {
     closeQuickAdd(() => {
-      setTab("add");
+      setTabWithFade("add");
       setLaunchAction({
         requestId: Date.now(),
         action,
@@ -6055,32 +8093,127 @@ function MainAppTabs() {
     inputRange: [0, 1],
     outputRange: ["0deg", "45deg"],
   });
+  const tabBarTranslateY = tabBarAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [130, 0],
+  });
+
+  useEffect(() => {
+    Animated.timing(tabBarAnim, {
+      toValue: shouldHideTabBar ? 0 : 1,
+      duration: 220,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  }, [shouldHideTabBar, tabBarAnim]);
+
+  useEffect(() => {
+    setVisitedTabs((current) => {
+      if (current[tab]) {
+        return current;
+      }
+      return {
+        ...current,
+        [tab]: true,
+      };
+    });
+  }, [tab]);
+
+  useEffect(() => {
+    if (tab !== "add") {
+      setHideTabBarForOverlay(false);
+      setHideTabBarForScanCamera(false);
+      setHideTabBarForMealQuestions(false);
+    }
+  }, [tab]);
 
   return (
     <SafeAreaView style={styles.screen}>
       <View style={styles.flex1}>
-        {tab === "dashboard" ? (
-          <DashboardScreen onOpenBodyProgress={() => setTab("body")} />
-        ) : null}
-        {tab === "add" ? (
-          <AddScreen
-            launchAction={launchAction}
-            onLaunchActionHandled={(requestId) => {
-              setLaunchAction((current) => {
-                if (!current || current.requestId !== requestId) {
-                  return current;
-                }
-                return null;
-              });
-            }}
-          />
-        ) : null}
-        {tab === "body" ? <BodyProgressScreen /> : null}
-        {tab === "history" ? <HistoryScreen /> : null}
-        {tab === "settings" ? <SettingsScreen /> : null}
+        <Animated.View
+          pointerEvents={tab === "dashboard" && !tabTransitioning ? "auto" : "none"}
+          style={[
+            styles.tabScene,
+            {
+              opacity: sceneOpacityRef.current.dashboard,
+              zIndex: tab === "dashboard" ? 3 : transitionFromTab === "dashboard" ? 2 : 1,
+            },
+          ]}
+        >
+          {visitedTabs.dashboard ? <DashboardScreen onOpenBodyProgress={() => setTabWithFade("body")} /> : null}
+        </Animated.View>
+        <Animated.View
+          pointerEvents={tab === "add" && !tabTransitioning ? "auto" : "none"}
+          style={[
+            styles.tabScene,
+            {
+              opacity: sceneOpacityRef.current.add,
+              zIndex: tab === "add" ? 3 : transitionFromTab === "add" ? 2 : 1,
+            },
+          ]}
+        >
+          {visitedTabs.add ? (
+            <AddScreen
+              isActive={tab === "add"}
+              launchAction={launchAction}
+              onLaunchActionHandled={(requestId) => {
+                setLaunchAction((current) => {
+                  if (!current || current.requestId !== requestId) {
+                    return current;
+                  }
+                  return null;
+                });
+              }}
+              onIntakeSaved={() => setTabWithFade("dashboard")}
+              onMealSourceSheetVisibilityChange={setHideTabBarForOverlay}
+              onScanCameraVisibilityChange={setHideTabBarForScanCamera}
+              onMealQuestionsVisibilityChange={setHideTabBarForMealQuestions}
+              onBackToPanel={() => setTabWithFade("dashboard")}
+            />
+          ) : null}
+        </Animated.View>
+        <Animated.View
+          pointerEvents={tab === "body" && !tabTransitioning ? "auto" : "none"}
+          style={[
+            styles.tabScene,
+            {
+              opacity: sceneOpacityRef.current.body,
+              zIndex: tab === "body" ? 3 : transitionFromTab === "body" ? 2 : 1,
+            },
+          ]}
+        >
+          {visitedTabs.body ? <BodyProgressScreen /> : null}
+        </Animated.View>
+        <Animated.View
+          pointerEvents={tab === "history" && !tabTransitioning ? "auto" : "none"}
+          style={[
+            styles.tabScene,
+            {
+              opacity: sceneOpacityRef.current.history,
+              zIndex: tab === "history" ? 3 : transitionFromTab === "history" ? 2 : 1,
+            },
+          ]}
+        >
+          {visitedTabs.history ? <HistoryScreen /> : null}
+        </Animated.View>
+        <Animated.View
+          pointerEvents={tab === "settings" && !tabTransitioning ? "auto" : "none"}
+          style={[
+            styles.tabScene,
+            {
+              opacity: sceneOpacityRef.current.settings,
+              zIndex: tab === "settings" ? 3 : transitionFromTab === "settings" ? 2 : 1,
+            },
+          ]}
+        >
+          {visitedTabs.settings ? <SettingsScreen /> : null}
+        </Animated.View>
       </View>
 
-      <View style={styles.tabBar}>
+      <Animated.View
+        pointerEvents={shouldHideTabBar ? "none" : "auto"}
+        style={[styles.tabBar, { opacity: tabBarAnim, transform: [{ translateY: tabBarTranslateY }] }]}
+      >
         {tabs.map(({ value, label, center }) => {
           const active = tab === value;
           const isCenter = Boolean(center);
@@ -6092,7 +8225,7 @@ function MainAppTabs() {
                   toggleQuickAdd();
                   return;
                 }
-                closeQuickAdd(() => setTab(value));
+                closeQuickAdd(() => setTabWithFade(value));
               }}
               style={[styles.tabItem, isCenter && styles.tabItemCenter, active && !isCenter && styles.tabItemActive]}
             >
@@ -6109,7 +8242,7 @@ function MainAppTabs() {
             </Pressable>
           );
         })}
-      </View>
+      </Animated.View>
       {quickAddVisible ? (
         <View style={styles.quickAddLayer} pointerEvents="box-none">
           <Pressable style={styles.quickAddBackdrop} onPress={() => closeQuickAdd()}>
@@ -6150,11 +8283,11 @@ function MainAppTabs() {
                   onPress={() => runQuickAction("meal_photo")}
                 />
                 <QuickAddCard
-                  action="label_fix"
-                  title="Corregir etiqueta"
-                  subtitle="Actualizar valores con foto"
+                  action="recipes"
+                  title="Mis recetas"
+                  subtitle="Reutiliza comidas y frecuentes"
                   accent="#ffcf6b"
-                  onPress={() => runQuickAction("label_fix")}
+                  onPress={() => runQuickAction("recipes")}
                 />
               </View>
             </Pressable>
@@ -6189,15 +8322,21 @@ function RootNavigator() {
 
 export default function App() {
   return (
-    <AuthProvider>
-      <StatusBar style="light" />
-      <RootNavigator />
-    </AuthProvider>
+    <I18nProvider>
+      <AuthProvider>
+        <StatusBar style="light" />
+        <RootNavigator />
+        <InAppAlertHost />
+      </AuthProvider>
+    </I18nProvider>
   );
 }
 
 const styles = StyleSheet.create({
   flex1: { flex: 1 },
+  tabScene: {
+    ...StyleSheet.absoluteFillObject,
+  },
   screen: {
     flex: 1,
     backgroundColor: theme.bg,
@@ -6209,8 +8348,88 @@ const styles = StyleSheet.create({
     padding: 24,
     gap: 12,
   },
+  skeletonLineLg: {
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: "rgba(255,255,255,0.08)",
+    width: "68%",
+    marginBottom: 10,
+  },
+  skeletonLineMd: {
+    height: 16,
+    borderRadius: 10,
+    backgroundColor: "rgba(255,255,255,0.075)",
+    width: "52%",
+    marginBottom: 10,
+  },
+  skeletonLineSm: {
+    height: 13,
+    borderRadius: 8,
+    backgroundColor: "rgba(255,255,255,0.065)",
+    width: "100%",
+    marginBottom: 8,
+  },
+  skeletonBlockTall: {
+    height: 110,
+    borderRadius: 16,
+    backgroundColor: "rgba(255,255,255,0.05)",
+    width: "100%",
+  },
+  skeletonRow: {
+    flexDirection: "row",
+    gap: 10,
+    width: "100%",
+  },
+  skeletonRing: {
+    flex: 1,
+    minHeight: 76,
+    borderRadius: 14,
+    backgroundColor: "rgba(255,255,255,0.055)",
+  },
+  skeletonTile: {
+    flex: 1,
+    minHeight: 84,
+    borderRadius: 14,
+    backgroundColor: "rgba(255,255,255,0.055)",
+  },
   headerWrap: {
     gap: 6,
+  },
+  headerTopRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    minHeight: 30,
+  },
+  headerTopSpacer: {
+    width: 76,
+    height: 30,
+  },
+  headerBackButton: {
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    width: 34,
+    height: 30,
+    paddingVertical: 4,
+    paddingHorizontal: 2,
+  },
+  headerBackIcon: {
+    color: theme.muted,
+    fontSize: 23,
+    fontWeight: "800",
+  },
+  headerRightAction: {
+    paddingHorizontal: 4,
+    paddingVertical: 4,
+    minHeight: 30,
+    justifyContent: "center",
+  },
+  headerRightActionText: {
+    color: theme.protein,
+    fontSize: 15,
+    fontWeight: "600",
   },
   headerTitle: {
     color: theme.text,
@@ -6269,6 +8488,50 @@ const styles = StyleSheet.create({
     color: theme.text,
     backgroundColor: theme.panelSoft,
   },
+  dateFieldButton: {
+    borderWidth: 1,
+    borderColor: theme.border,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    backgroundColor: theme.panelSoft,
+  },
+  dateFieldButtonText: {
+    color: theme.text,
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  birthDatePickerWrap: {
+    borderWidth: 1,
+    borderColor: theme.border,
+    borderRadius: 14,
+    padding: 8,
+    backgroundColor: theme.panelSoft,
+    gap: 8,
+  },
+  usernameStatusText: {
+    fontSize: 12,
+    color: theme.muted,
+    marginTop: -2,
+  },
+  usernameStatusTextOk: {
+    color: theme.ok,
+  },
+  usernameStatusTextError: {
+    color: theme.danger,
+  },
+  readOnlyField: {
+    borderWidth: 1,
+    borderColor: theme.border,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    backgroundColor: theme.panelMuted,
+  },
+  readOnlyFieldValue: {
+    color: theme.text,
+    fontSize: 14,
+  },
   primaryButton: {
     backgroundColor: theme.accent,
     borderWidth: 1,
@@ -6282,6 +8545,30 @@ const styles = StyleSheet.create({
     color: "#050505",
     fontSize: 15,
     fontWeight: "700",
+  },
+  mealQuestionProgressButtonContent: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+  },
+  mealQuestionProgressRingWrap: {
+    width: 34,
+    height: 34,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  mealQuestionProgressPercent: {
+    position: "absolute",
+    color: "#050505",
+    fontSize: 10,
+    fontWeight: "800",
+  },
+  mealQuestionProgressPhase: {
+    color: theme.muted,
+    fontSize: 12,
+    textAlign: "center",
+    marginTop: 2,
   },
   secondaryButton: {
     borderWidth: 1,
@@ -6533,6 +8820,31 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: "800",
     letterSpacing: 0.2,
+  },
+  bodyFormModalLayer: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: "center",
+    alignItems: "center",
+    paddingHorizontal: 16,
+  },
+  bodyFormModalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  bodyFormModalScrim: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.52)",
+  },
+  bodyFormModalContainer: {
+    width: "100%",
+    maxWidth: 460,
+  },
+  bodyFormModalCard: {
+    borderWidth: 1,
+    borderColor: theme.border,
+    borderRadius: 20,
+    backgroundColor: "#15181f",
+    padding: 16,
+    gap: 10,
   },
   emptyStateCard: {
     alignItems: "center",
@@ -7202,11 +9514,34 @@ const styles = StyleSheet.create({
   intakeMain: {
     flex: 1,
     gap: 2,
+    minWidth: 0,
+  },
+  intakeNameRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    minWidth: 0,
   },
   intakeName: {
     color: theme.text,
     fontWeight: "600",
     fontSize: 14,
+    flexShrink: 1,
+    minWidth: 0,
+  },
+  intakeAIBadge: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: theme.warning,
+    backgroundColor: "rgba(241,208,142,0.1)",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  intakeAIBadgeText: {
+    color: theme.warning,
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 0.25,
   },
   intakeMeta: {
     color: theme.muted,
@@ -7300,15 +9635,22 @@ const styles = StyleSheet.create({
     paddingBottom: 4,
   },
   historyCalendarArrowTouch: {
-    width: 36,
-    height: 36,
+    width: 42,
+    height: 34,
     borderRadius: 999,
     alignItems: "center",
     justifyContent: "center",
   },
+  historyCalendarArrowIcon: {
+    color: theme.text,
+    fontSize: 28,
+    fontWeight: "500",
+    lineHeight: 28,
+    marginTop: -2,
+  },
   historyCalendarArrowTouchPressed: {
-    backgroundColor: "rgba(255,255,255,0.08)",
-    transform: [{ scale: 0.96 }],
+    opacity: 0.58,
+    transform: [{ scale: 0.97 }],
   },
   historyCalendarLoadingRow: {
     paddingVertical: 8,
@@ -7319,23 +9661,32 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
+    borderRadius: 16,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
   },
   historyCalendarStreakBadgeActive: {
-    backgroundColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "rgba(255,255,255,0.06)",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.12)",
+    borderColor: "rgba(255,255,255,0.14)",
   },
   historyCalendarStreakBadgeIdle: {
-    backgroundColor: "rgba(255,255,255,0.03)",
+    backgroundColor: "rgba(255,255,255,0.025)",
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.08)",
   },
+  historyCalendarStreakFlameWrap: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.05)",
+    padding: 4,
+  },
   historyCalendarStreakTextWrap: {
     flex: 1,
-    gap: 0,
+    gap: 2,
   },
   historyCalendarStreakTitle: {
     color: theme.text,
@@ -7344,20 +9695,33 @@ const styles = StyleSheet.create({
   },
   historyCalendarStreakSubtitle: {
     color: "#9a9aa2",
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: "600",
   },
   historyCalendarStreakMetric: {
-    minWidth: 56,
-    alignItems: "flex-end",
+    minWidth: 64,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    alignItems: "center",
     justifyContent: "center",
     gap: 0,
   },
+  historyCalendarStreakMetricActive: {
+    backgroundColor: "rgba(237, 141, 95, 0.18)",
+    borderWidth: 1,
+    borderColor: "rgba(237, 141, 95, 0.35)",
+  },
+  historyCalendarStreakMetricIdle: {
+    backgroundColor: "rgba(255,255,255,0.05)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+  },
   historyCalendarStreakDays: {
     color: theme.text,
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: "800",
-    lineHeight: 20,
+    lineHeight: 18,
   },
   historyCalendarStreakDaysLabel: {
     color: "#a5a5ae",
@@ -7515,6 +9879,13 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     gap: 8,
   },
+  historyDayHeadLeft: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
   historyIntakeRow: {
     borderWidth: 1,
     borderColor: theme.border,
@@ -7542,11 +9913,31 @@ const styles = StyleSheet.create({
     color: theme.text,
     fontWeight: "700",
     fontSize: 13,
+    flexShrink: 1,
+    minWidth: 0,
   },
   historyValue: {
     color: theme.muted,
     fontSize: 12,
     fontWeight: "600",
+    marginLeft: 6,
+    flexShrink: 0,
+    minWidth: 54,
+    textAlign: "right",
+  },
+  historyAIBadge: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: theme.warning,
+    backgroundColor: "rgba(241,208,142,0.1)",
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+  },
+  historyAIBadgeText: {
+    color: theme.warning,
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 0.25,
   },
   addHubPane: {
     gap: 12,
@@ -7683,6 +10074,42 @@ const styles = StyleSheet.create({
     height: 280,
     backgroundColor: "#0a0a0a",
   },
+  mealPhotoCountBadge: {
+    position: "absolute",
+    top: 10,
+    right: 10,
+    borderWidth: 1,
+    borderColor: theme.border,
+    borderRadius: 999,
+    backgroundColor: "rgba(8,8,8,0.82)",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  mealPhotoCountBadgeText: {
+    color: theme.text,
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 0.3,
+  },
+  mealPhotoThumbStrip: {
+    position: "absolute",
+    left: 8,
+    right: 8,
+    bottom: 8,
+    flexDirection: "row",
+    gap: 8,
+  },
+  mealPhotoThumb: {
+    flex: 1,
+    aspectRatio: 1,
+    borderWidth: 1,
+    borderColor: theme.border,
+    borderRadius: 10,
+    backgroundColor: "#0f0f0f",
+  },
+  mealPhotoThumbPrimary: {
+    borderColor: theme.accent,
+  },
   mealPhotoPreviewEmpty: {
     width: "100%",
     minHeight: 190,
@@ -7693,6 +10120,44 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     padding: 14,
+  },
+  mealPhotoGuideCard: {
+    width: "100%",
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: theme.border,
+    backgroundColor: theme.panelSoft,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 20,
+  },
+  mealPhotoGuideIconWrap: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    borderWidth: 1,
+    borderColor: theme.border,
+    backgroundColor: theme.panel,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  mealPhotoGuideTitle: {
+    color: theme.text,
+    fontSize: 15,
+    fontWeight: "700",
+  },
+  mealPhotoGuideText: {
+    color: theme.muted,
+    fontSize: 12,
+    textAlign: "center",
+    lineHeight: 18,
+    maxWidth: 260,
+  },
+  mealPhotoPressablePressed: {
+    opacity: 0.9,
+    transform: [{ scale: 0.995 }],
   },
   mealQuestionScreen: {
     flex: 1,
@@ -7736,6 +10201,127 @@ const styles = StyleSheet.create({
     borderColor: theme.border,
     backgroundColor: "#0b0b0b",
   },
+  mealPrecisionCard: {
+    borderWidth: 1,
+    borderColor: theme.border,
+    borderRadius: 14,
+    backgroundColor: theme.panelSoft,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    gap: 10,
+  },
+  mealPrecisionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  mealPrecisionLabel: {
+    color: theme.text,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  mealPrecisionValueRow: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  mealPrecisionValue: {
+    fontSize: 34,
+    lineHeight: 36,
+    fontWeight: "900",
+    letterSpacing: -0.6,
+  },
+  mealPrecisionMetaText: {
+    color: theme.muted,
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  mealPrecisionTrack: {
+    height: 8,
+    borderRadius: 999,
+    backgroundColor: theme.border,
+    overflow: "hidden",
+  },
+  mealPrecisionFill: {
+    height: "100%",
+    borderRadius: 999,
+  },
+  mealEditableGrid: {
+    gap: 8,
+  },
+  mealSourceSheetLayer: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: "flex-end",
+    paddingHorizontal: 14,
+    paddingBottom: 18,
+  },
+  mealSourceSheetBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  mealSourceSheetScrim: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.52)",
+  },
+  mealSourceSheetContainer: {
+    width: "100%",
+  },
+  mealSourceSheetCard: {
+    borderWidth: 1,
+    borderColor: theme.border,
+    borderRadius: 20,
+    backgroundColor: "#16181f",
+    paddingHorizontal: 14,
+    paddingTop: 14,
+    paddingBottom: 14,
+    gap: 12,
+  },
+  mealSourceSheetTitle: {
+    color: theme.text,
+    fontSize: 16,
+    fontWeight: "800",
+    textAlign: "center",
+  },
+  mealSourceSheetOptions: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  mealSourceSheetOption: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: "#2e323c",
+    borderRadius: 14,
+    backgroundColor: "#232732",
+    minHeight: 138,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 10,
+    paddingVertical: 12,
+    gap: 8,
+  },
+  mealSourceSheetOptionIconWrap: {
+    width: 48,
+    height: 48,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: theme.border,
+    backgroundColor: "#2b2f3a",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  mealSourceSheetOptionTitle: {
+    color: theme.text,
+    fontSize: 15,
+    fontWeight: "800",
+    textAlign: "center",
+  },
+  mealSourceSheetOptionSubtitle: {
+    color: theme.muted,
+    fontSize: 12,
+    textAlign: "center",
+    lineHeight: 16,
+  },
   mealMetricsGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -7771,6 +10357,64 @@ const styles = StyleSheet.create({
     borderColor: theme.border,
     borderRadius: 14,
     overflow: "hidden",
+  },
+  recipePreviewList: {
+    borderWidth: 1,
+    borderColor: theme.border,
+    borderRadius: 14,
+    overflow: "hidden",
+    marginTop: 2,
+  },
+  recipePreviewRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.border,
+    backgroundColor: theme.panelSoft,
+  },
+  recipePreviewImage: {
+    width: 44,
+    height: 44,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: theme.border,
+    backgroundColor: "#0b0b0b",
+  },
+  recipePreviewImagePlaceholder: {
+    width: 44,
+    height: 44,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: theme.border,
+    backgroundColor: theme.panelMuted,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  recipePreviewImagePlaceholderText: {
+    color: theme.muted,
+    fontSize: 12,
+    fontWeight: "800",
+    letterSpacing: 0.8,
+  },
+  recipePreviewTextWrap: {
+    flex: 1,
+    gap: 3,
+  },
+  recipePreviewTitle: {
+    color: theme.text,
+    fontWeight: "700",
+    fontSize: 14,
+  },
+  recipePreviewSubtitle: {
+    color: theme.muted,
+    fontSize: 12,
+  },
+  recipePreviewMacroLine: {
+    color: theme.muted,
+    fontSize: 11,
   },
   searchResultRow: {
     flexDirection: "row",
@@ -7824,6 +10468,12 @@ const styles = StyleSheet.create({
     color: theme.muted,
     fontSize: 12,
   },
+  inlineRowChevron: {
+    color: theme.muted,
+    fontSize: 22,
+    fontWeight: "700",
+    lineHeight: 22,
+  },
   productImage: {
     width: "100%",
     height: 180,
@@ -7832,16 +10482,92 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     backgroundColor: "#090d16",
   },
-  productImagePlaceholder: {
-    width: "100%",
-    height: 120,
+  quantitySummaryHeader: {
+    gap: 2,
+    marginTop: 4,
+  },
+  quantitySummaryTitle: {
+    color: theme.text,
+    fontSize: 15,
+    fontWeight: "700",
+  },
+  quantitySummarySub: {
+    color: theme.muted,
+    fontSize: 12,
+  },
+  addMacroSummaryWrap: {
     borderWidth: 1,
     borderColor: theme.border,
-    borderRadius: 12,
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
     backgroundColor: theme.panelSoft,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  addMacroRingWrap: {
+    width: 126,
+    height: 126,
     alignItems: "center",
     justifyContent: "center",
+  },
+  addMacroRingCenter: {
+    position: "absolute",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  addMacroRingValue: {
+    color: theme.text,
+    fontSize: 32,
+    fontWeight: "800",
+    lineHeight: 34,
+  },
+  addMacroRingUnit: {
+    color: theme.muted,
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  addMacroMetricsWrap: {
+    flex: 1,
+    gap: 9,
+  },
+  addMacroMetricItem: {
+    gap: 1,
+  },
+  addMacroMetricPercent: {
+    fontSize: 15,
+    fontWeight: "700",
+  },
+  addMacroMetricValue: {
+    color: theme.text,
+    fontSize: 17,
+    fontWeight: "700",
+  },
+  addMacroMetricLabel: {
+    color: theme.muted,
+    fontSize: 12,
+  },
+  correctionCallout: {
+    borderWidth: 1,
+    borderColor: "#3a4b68",
+    borderRadius: 14,
+    backgroundColor: "#131924",
     padding: 12,
+    gap: 10,
+  },
+  correctionCalloutHeader: {
+    gap: 3,
+  },
+  correctionCalloutTitle: {
+    color: theme.text,
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  correctionCalloutText: {
+    color: theme.muted,
+    fontSize: 12,
+    lineHeight: 18,
   },
   methodRow: {
     flexDirection: "row",
@@ -7960,8 +10686,82 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     textAlign: "center",
   },
+  inAppAlertLayer: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    paddingHorizontal: 20,
+  },
+  inAppAlertBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.62)",
+  },
+  inAppAlertCard: {
+    width: "100%",
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: theme.border,
+    backgroundColor: theme.panel,
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 14,
+    gap: 10,
+  },
+  inAppAlertTitle: {
+    color: theme.text,
+    fontSize: 17,
+    fontWeight: "800",
+  },
+  inAppAlertMessage: {
+    color: theme.muted,
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  inAppAlertButtons: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "flex-end",
+    gap: 8,
+    marginTop: 2,
+  },
+  inAppAlertButton: {
+    minWidth: 92,
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  inAppAlertButtonPrimary: {
+    borderColor: theme.accent,
+    backgroundColor: theme.accent,
+  },
+  inAppAlertButtonSecondary: {
+    borderColor: theme.border,
+    backgroundColor: theme.panelSoft,
+  },
+  inAppAlertButtonDanger: {
+    borderColor: theme.danger,
+    backgroundColor: "rgba(244,143,143,0.14)",
+  },
+  inAppAlertButtonText: {
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  inAppAlertButtonTextPrimary: {
+    color: "#080808",
+  },
+  inAppAlertButtonTextSecondary: {
+    color: theme.text,
+  },
+  inAppAlertButtonTextDanger: {
+    color: theme.danger,
+  },
   quickAddLayer: {
     ...StyleSheet.absoluteFillObject,
+    zIndex: 120,
+    elevation: 40,
     justifyContent: "flex-end",
     paddingHorizontal: 14,
     paddingBottom: 94,
@@ -8034,6 +10834,8 @@ const styles = StyleSheet.create({
     left: 14,
     right: 14,
     bottom: 12,
+    zIndex: 40,
+    elevation: 20,
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: theme.panel,
