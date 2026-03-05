@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 import json
+import logging
+import math
 import re
 import unicodedata
 from datetime import UTC, date, datetime, time, timedelta
 from difflib import SequenceMatcher
+from pathlib import Path
 from typing import Annotated, Literal
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, UploadFile, status
-from sqlalchemy import and_, or_
+from sqlalchemy import Float, and_, case, cast, func, literal, or_
+from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, desc, select
+from starlette.datastructures import Headers
 
 from app.config import get_settings
 from app.database import get_session
@@ -18,10 +24,11 @@ from app.models import (
     BodyProgressPhoto,
     BodyWeightLog,
     DailyGoal,
-    EmailOTP,
     Intake,
     IntakeMethod,
+    MealPhotoAnalysis,
     NutritionBasis,
+    PendingRegistration,
     Product,
     UserAccount,
     UserFavoriteProduct,
@@ -78,6 +85,7 @@ from app.schemas import (
     UserAIKeyTestRequest,
     UserAIKeyTestResponse,
     UserAIKeyUpsertRequest,
+    UsernameAvailabilityResponse,
     VerifyRequest,
     WaterLogCreate,
     WaterLogRead,
@@ -147,16 +155,215 @@ from app.services.vision_ai import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 EAN_PATTERN = re.compile(r"^\d{8,14}$")
 MONTH_PATTERN = re.compile(r"^\d{4}-\d{2}$")
+USERNAME_PATTERN = re.compile(r"^[a-z0-9._]{3,32}$")
 OTP_MAX_ATTEMPTS = 5
+MAX_MEAL_PHOTOS = 3
+
+
+def _meal_analysis_storage_root() -> Path:
+    storage_root = Path(get_settings().meal_analysis_storage_dir).expanduser()
+    storage_root.mkdir(parents=True, exist_ok=True)
+    return storage_root
+
+
+def _guess_photo_extension(filename: str | None, content_type: str | None) -> str:
+    lowered_name = (filename or "").lower()
+    lowered_type = (content_type or "").lower()
+    if lowered_name.endswith(".png") or "png" in lowered_type:
+        return ".png"
+    if lowered_name.endswith(".webp") or "webp" in lowered_type:
+        return ".webp"
+    return ".jpg"
+
+
+def _safe_photo_content_type(content_type: str | None, extension: str) -> str:
+    if content_type and content_type.startswith("image/"):
+        return content_type
+    if extension == ".png":
+        return "image/png"
+    if extension == ".webp":
+        return "image/webp"
+    return "image/jpeg"
+
+
+def _parse_analysis_meta(raw_meta: str | None) -> list[dict[str, str]]:
+    if not raw_meta:
+        return []
+    try:
+        parsed = json.loads(raw_meta)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+
+    normalized: list[dict[str, str]] = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path", "")).strip()
+        if not path:
+            continue
+        normalized.append(
+            {
+                "path": path,
+                "filename": str(item.get("filename") or Path(path).name),
+                "content_type": str(item.get("content_type") or "image/jpeg"),
+            }
+        )
+    return normalized
+
+
+def _remove_meal_analysis_files(raw_meta: str | None) -> None:
+    meta = _parse_analysis_meta(raw_meta)
+    if not meta:
+        return
+
+    parent: Path | None = None
+    for item in meta:
+        path = Path(item["path"])
+        try:
+            if path.exists():
+                path.unlink()
+        except OSError:
+            logger.warning("Could not delete cached analysis file: %s", path)
+        if parent is None:
+            parent = path.parent
+
+    if parent is not None:
+        try:
+            if parent.exists():
+                parent.rmdir()
+        except OSError:
+            # Ignore non-empty or already removed directories.
+            pass
+
+
+def _cleanup_expired_meal_analysis(session: Session, *, user_id: int | None = None) -> None:
+    now = datetime.now(UTC)
+    query = select(MealPhotoAnalysis).where(MealPhotoAnalysis.expires_at <= now)
+    if user_id is not None:
+        query = query.where(MealPhotoAnalysis.user_id == user_id)
+    expired = session.exec(query).all()
+    if not expired:
+        return
+
+    for analysis in expired:
+        _remove_meal_analysis_files(analysis.image_meta_json)
+        session.delete(analysis)
+    session.commit()
+
+
+async def _store_meal_analysis(
+    *,
+    session: Session,
+    user_id: int,
+    photo_files: list[UploadFile],
+) -> MealPhotoAnalysis:
+    analysis_id = uuid4().hex
+    root = _meal_analysis_storage_root() / analysis_id
+    root.mkdir(parents=True, exist_ok=True)
+
+    metadata: list[dict[str, str]] = []
+    for index, photo in enumerate(photo_files):
+        raw = await photo.read()
+        await photo.seek(0)
+        if not raw:
+            continue
+        extension = _guess_photo_extension(photo.filename, photo.content_type)
+        filename = f"photo_{index + 1}{extension}"
+        filepath = root / filename
+        filepath.write_bytes(raw)
+        metadata.append(
+            {
+                "path": str(filepath),
+                "filename": filename,
+                "content_type": _safe_photo_content_type(photo.content_type, extension),
+            }
+        )
+
+    if not metadata:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Adjunta al menos una foto.")
+
+    expires_at = datetime.now(UTC) + timedelta(minutes=max(1, get_settings().meal_analysis_ttl_minutes))
+    analysis = MealPhotoAnalysis(
+        id=analysis_id,
+        user_id=user_id,
+        image_meta_json=json.dumps(metadata, ensure_ascii=True),
+        expires_at=expires_at,
+    )
+    session.add(analysis)
+    session.commit()
+    session.refresh(analysis)
+    return analysis
+
+
+def _load_meal_analysis_files(
+    *,
+    session: Session,
+    analysis_id: str,
+    user_id: int,
+) -> tuple[list[UploadFile], MealPhotoAnalysis]:
+    analysis = session.get(MealPhotoAnalysis, analysis_id)
+    if not analysis or analysis.user_id != user_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Análisis temporal no encontrado.")
+
+    if _to_utc(analysis.expires_at) <= datetime.now(UTC):
+        _remove_meal_analysis_files(analysis.image_meta_json)
+        session.delete(analysis)
+        session.commit()
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail="El análisis temporal expiró. Sube las fotos otra vez.",
+        )
+
+    uploads: list[UploadFile] = []
+    for item in _parse_analysis_meta(analysis.image_meta_json):
+        path = Path(item["path"])
+        if not path.exists():
+            continue
+        file_handle = path.open("rb")
+        headers = Headers({"content-type": item.get("content_type", "image/jpeg")})
+        uploads.append(UploadFile(file=file_handle, filename=item.get("filename") or path.name, headers=headers))
+
+    if not uploads:
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail="No se encontraron fotos para este análisis. Sube las fotos de nuevo.",
+        )
+    if len(uploads) > MAX_MEAL_PHOTOS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Máximo {MAX_MEAL_PHOTOS} fotos por estimación.",
+        )
+    return uploads, analysis
+
+
+async def _close_upload_files(upload_files: list[UploadFile]) -> None:
+    for upload in upload_files:
+        try:
+            await upload.close()
+        except Exception:
+            continue
 
 
 def _to_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
+
+
+def _age_from_birth_date(birth_date: date | None, *, today: date | None = None) -> int | None:
+    if birth_date is None:
+        return None
+    current_day = today or datetime.now(UTC).date()
+    years = current_day.year - birth_date.year
+    if (current_day.month, current_day.day) < (birth_date.month, birth_date.day):
+        years -= 1
+    return max(years, 0)
 
 
 def _rate_limit(request: Request, *, scope: str, limit: int, window_seconds: int, key_suffix: str = "") -> None:
@@ -172,25 +379,36 @@ def _auth_user(user: UserAccount) -> AuthUser:
     return AuthUser(
         id=user.id,
         email=user.email,
+        username=user.username,
+        sex=user.sex,
+        birth_date=user.birth_date,
         email_verified=user.email_verified,
         onboarding_completed=user.onboarding_completed,
     )
 
 
-def _profile_to_read(profile: UserProfile) -> ProfileRead:
+def _profile_to_read(profile: UserProfile, user: UserAccount | None = None) -> ProfileRead:
+    effective_age = profile.age
+    effective_sex = profile.sex
+    if user is not None:
+        effective_age = _age_from_birth_date(user.birth_date) if user.birth_date else profile.age
+        effective_sex = user.sex
+
     bmi_value = profile.bmi if profile.bmi is not None else bmi(profile.weight_kg, profile.height_cm)
     bmi_label, bmi_color = bmi_category(bmi_value)
 
     fat_value = profile.body_fat_percent
     if fat_value is None:
-        fat_value = body_fat_percent(profile)
-    fat_label, fat_color = body_fat_category(fat_value, profile.sex)
+        profile_for_fat = UserProfile.model_validate(profile.model_dump())
+        profile_for_fat.sex = effective_sex
+        fat_value = body_fat_percent(profile_for_fat)
+    fat_label, fat_color = body_fat_category(fat_value, effective_sex)
 
     return ProfileRead(
         weight_kg=profile.weight_kg,
         height_cm=profile.height_cm,
-        age=profile.age,
-        sex=profile.sex,
+        age=effective_age,
+        sex=effective_sex,
         activity_level=profile.activity_level,
         goal_type=profile.goal_type,
         waist_cm=profile.waist_cm,
@@ -354,9 +572,11 @@ def _infer_portion_from_answers(answers: dict[str, str]) -> Literal["small", "me
 
 def _infer_added_fats_from_answers(answers: dict[str, str]) -> bool | None:
     joined = " ".join(answers.values()).lower()
-    if any(token in joined for token in {"yes", "si", "sí"}):
+    if any(token in joined for token in {"no se", "no sé", "i don't know", "dont know", "unknown"}):
+        return None
+    if re.search(r"\b(yes|si|sí)\b", joined):
         return True
-    if "no" in joined:
+    if re.search(r"\bno\b", joined):
         return False
     return None
 
@@ -384,6 +604,7 @@ def _resolve_meal_inputs(
     portion_size: str | None,
     has_added_fats: bool | None,
     quantity_note: str | None,
+    locale: Literal["es", "en"] = "es",
 ) -> tuple[str, Literal["small", "medium", "large"] | None, bool | None, str | None, list[str]]:
     answers = _parse_meal_answers_json(answers_json)
     normalized_portion: Literal["small", "medium", "large"] | None
@@ -402,9 +623,44 @@ def _resolve_meal_inputs(
         resolved_description = f"{resolved_description}. {answer_text}" if resolved_description else answer_text
 
     if not resolved_description:
-        resolved_description = "Comida estimada por foto"
+        resolved_description = "Estimated meal from photo" if locale == "en" else "Comida estimada por foto"
 
     return resolved_description, normalized_portion, normalized_added_fats, normalized_quantity_note, answer_context
+
+
+def _normalize_locale(locale: str | None) -> Literal["es", "en"]:
+    if locale and locale.strip().lower().startswith("en"):
+        return "en"
+    return "es"
+
+
+def _apply_meal_preview_overrides(
+    *,
+    preview_nutrients: dict[str, float],
+    override_kcal: float | None,
+    override_protein_g: float | None,
+    override_fat_g: float | None,
+    override_carbs_g: float | None,
+) -> dict[str, float]:
+    output = dict(preview_nutrients)
+    overrides = {
+        "kcal": override_kcal,
+        "protein_g": override_protein_g,
+        "fat_g": override_fat_g,
+        "carbs_g": override_carbs_g,
+    }
+
+    for key, value in overrides.items():
+        if value is None:
+            continue
+        if not math.isfinite(value) or value < 0:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Valor inválido para {key}.",
+            )
+        output[key] = round(float(value), 2)
+
+    return output
 
 
 def get_current_user(
@@ -446,31 +702,79 @@ def get_ready_user(
     return current_user
 
 
-def _otp_response(user: UserAccount, message: str, code: str | None) -> RegisterResponse:
+def _otp_response(email: str, username: str, message: str, code: str | None) -> RegisterResponse:
     settings = get_settings()
     debug_code = code if settings.expose_verification_code else None
 
     return RegisterResponse(
-        user_id=user.id,
-        email=user.email,
-        email_verified=user.email_verified,
-        onboarding_completed=user.onboarding_completed,
+        user_id=0,
+        email=email,
+        username=username,
+        email_verified=False,
+        onboarding_completed=False,
         message=message,
         debug_verification_code=debug_code,
     )
 
 
-def _create_otp(session: Session, user: UserAccount) -> str:
+def _normalize_username(raw: str) -> str:
+    return raw.strip().lower()
+
+
+def _validate_username(username: str) -> str:
+    normalized = _normalize_username(username)
+    if not USERNAME_PATTERN.fullmatch(normalized):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Nombre de usuario inválido. Usa 3-32 caracteres (a-z, 0-9, punto o guion bajo).",
+        )
+    return normalized
+
+
+def _create_or_refresh_pending_registration(
+    session: Session,
+    *,
+    email: str,
+    username: str | None = None,
+    password_hash: str | None = None,
+    sex: Literal["male", "female", "other"] | None = None,
+    birth_date: date | None = None,
+) -> str:
     settings = get_settings()
     raw_code = create_verification_code()
+    code_hash = hash_otp_code(raw_code)
 
-    otp = EmailOTP(
-        user_id=user.id,
-        code_hash=hash_otp_code(raw_code),
-        expires_at=datetime.now(UTC) + timedelta(minutes=settings.verification_code_ttl_minutes),
-        attempts=0,
-    )
-    session.add(otp)
+    pending = session.exec(select(PendingRegistration).where(PendingRegistration.email == email)).first()
+    if pending:
+        if username:
+            pending.username = username
+        if password_hash:
+            pending.password_hash = password_hash
+        if sex:
+            pending.sex = sex
+        if birth_date:
+            pending.birth_date = birth_date
+        pending.code_hash = code_hash
+        pending.expires_at = datetime.now(UTC) + timedelta(minutes=settings.verification_code_ttl_minutes)
+        pending.attempts = 0
+        pending.created_at = datetime.now(UTC)
+        session.add(pending)
+    else:
+        if not password_hash:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pending registration not found")
+        if not username:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Username is required")
+        pending = PendingRegistration(
+            email=email,
+            username=username,
+            password_hash=password_hash,
+            sex=sex or "other",
+            birth_date=birth_date,
+            code_hash=code_hash,
+            expires_at=datetime.now(UTC) + timedelta(minutes=settings.verification_code_ttl_minutes),
+            attempts=0,
+        )
+        session.add(pending)
     return raw_code
 
 
@@ -487,6 +791,10 @@ def register(
 ) -> RegisterResponse:
     _rate_limit(request, scope="auth_register", limit=8, window_seconds=60)
     email = payload.email.strip().lower()
+    username = _validate_username(payload.username)
+    age = _age_from_birth_date(payload.birth_date)
+    if age is None or age < 13:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Debes tener al menos 13 años")
     if not validate_email_format(email):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid email")
 
@@ -494,29 +802,93 @@ def register(
     if existing:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
 
-    password_hash = hash_password(payload.password)
-    user = UserAccount(
-        email=email,
-        password_hash=password_hash,
-        email_verified=False,
-        onboarding_completed=False,
-    )
-    session.add(user)
-    session.flush()
+    existing_username = session.exec(select(UserAccount).where(UserAccount.username == username)).first()
+    if existing_username:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Username already in use")
 
-    raw_code = _create_otp(session, user)
+    pending_with_username = session.exec(
+        select(PendingRegistration).where(PendingRegistration.username == username)
+    ).first()
+    if pending_with_username and pending_with_username.email != email:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Username already in use")
+
+    try:
+        password_hash = hash_password(payload.password)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+    raw_code = _create_or_refresh_pending_registration(
+        session,
+        email=email,
+        username=username,
+        password_hash=password_hash,
+        sex=payload.sex,
+        birth_date=payload.birth_date,
+    )
     session.commit()
 
+    settings = get_settings()
     message = "Account created. Verify your email with the code."
     try:
         sent = send_verification_email(email, raw_code)
-    except EmailSendError:
+    except EmailSendError as exc:
+        logger.exception("SMTP send failed on register for %s", email)
         sent = False
+        if settings.dev_email_mode:
+            logger.info("DEV OTP fallback for %s: %s", email, raw_code)
+        message = f"Cuenta creada, pero fallo enviando email de verificación (SMTP). Error: {exc}"
 
     if not sent:
-        message = "Account created. SMTP disabled, use development OTP code."
+        if not settings.smtp_host:
+            message = "Cuenta creada. SMTP desactivado, usa el OTP de desarrollo."
+        elif settings.dev_email_mode:
+            message = "Cuenta creada. SMTP falló, usa OTP de desarrollo y revisa tu configuración SMTP."
+        else:
+            message = "Cuenta creada, pero no se pudo enviar el email de verificación. Revisa SMTP."
 
-    return _otp_response(user, message, raw_code)
+    return _otp_response(email, username, message, raw_code)
+
+
+@router.get("/auth/check-username", response_model=UsernameAvailabilityResponse)
+def check_username_availability(
+    username: str,
+    request: Request,
+    session: Annotated[Session, Depends(get_session)],
+) -> UsernameAvailabilityResponse:
+    _rate_limit(request, scope="auth_username_check", limit=40, window_seconds=60)
+    normalized = _normalize_username(username)
+
+    if not normalized:
+        return UsernameAvailabilityResponse(
+            username="",
+            available=False,
+            reason="Escribe un nombre de usuario.",
+        )
+
+    if not USERNAME_PATTERN.fullmatch(normalized):
+        return UsernameAvailabilityResponse(
+            username=normalized,
+            available=False,
+            reason="Formato inválido. Usa 3-32 caracteres: letras minúsculas, números, punto o guion bajo.",
+        )
+
+    existing = session.exec(select(UserAccount).where(UserAccount.username == normalized)).first()
+    if existing:
+        return UsernameAvailabilityResponse(
+            username=normalized,
+            available=False,
+            reason="Ese nombre de usuario ya está en uso.",
+        )
+
+    pending = session.exec(select(PendingRegistration).where(PendingRegistration.username == normalized)).first()
+    if pending:
+        return UsernameAvailabilityResponse(
+            username=normalized,
+            available=False,
+            reason="Ese nombre de usuario está reservado por un registro pendiente.",
+        )
+
+    return UsernameAvailabilityResponse(username=normalized, available=True, reason=None)
 
 
 @router.post("/auth/resend-code", response_model=RegisterResponse)
@@ -527,23 +899,37 @@ def resend_code(
 ) -> RegisterResponse:
     _rate_limit(request, scope="auth_resend", limit=8, window_seconds=60)
     email = payload.email.strip().lower()
-    user = session.exec(select(UserAccount).where(UserAccount.email == email)).first()
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    existing_user = session.exec(select(UserAccount).where(UserAccount.email == email)).first()
+    if existing_user and existing_user.email_verified:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already verified")
 
-    raw_code = _create_otp(session, user)
+    pending = session.exec(select(PendingRegistration).where(PendingRegistration.email == email)).first()
+    if not pending:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pending registration not found")
+
+    raw_code = _create_or_refresh_pending_registration(session, email=email)
     session.commit()
 
+    settings = get_settings()
     message = "A new verification code was generated."
     try:
         sent = send_verification_email(email, raw_code)
-    except EmailSendError:
+    except EmailSendError as exc:
+        logger.exception("SMTP send failed on resend-code for %s", email)
         sent = False
+        if settings.dev_email_mode:
+            logger.info("DEV OTP fallback for %s: %s", email, raw_code)
+        message = f"Código regenerado, pero fallo enviando email (SMTP). Error: {exc}"
 
     if not sent:
-        message = "SMTP disabled, use development OTP code."
+        if not settings.smtp_host:
+            message = "SMTP desactivado, usa el OTP de desarrollo."
+        elif settings.dev_email_mode:
+            message = "SMTP falló, usa OTP de desarrollo y revisa tu configuración SMTP."
+        else:
+            message = "No se pudo enviar el código por email. Revisa SMTP."
 
-    return _otp_response(user, message, raw_code)
+    return _otp_response(email, pending.username, message, raw_code)
 
 
 @router.post("/auth/verify", response_model=AuthResponse)
@@ -554,36 +940,52 @@ def verify_email(
 ) -> AuthResponse:
     _rate_limit(request, scope="auth_verify", limit=20, window_seconds=60)
     email = payload.email.strip().lower()
-    user = session.exec(select(UserAccount).where(UserAccount.email == email)).first()
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    pending = session.exec(select(PendingRegistration).where(PendingRegistration.email == email)).first()
+    if not pending:
+        existing_user = session.exec(select(UserAccount).where(UserAccount.email == email)).first()
+        if existing_user and existing_user.email_verified:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already verified")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pending registration not found")
 
-    otp = session.exec(
-        select(EmailOTP)
-        .where(EmailOTP.user_id == user.id)
-        .where(EmailOTP.used_at.is_(None))
-        .order_by(desc(EmailOTP.created_at))
-    ).first()
-
-    if not otp:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No active verification code")
-
-    if otp.attempts >= OTP_MAX_ATTEMPTS:
+    if pending.attempts >= OTP_MAX_ATTEMPTS:
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Too many attempts")
 
-    if _to_utc(otp.expires_at) < datetime.now(UTC):
+    if _to_utc(pending.expires_at) < datetime.now(UTC):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Verification code expired")
 
-    if not verify_otp_code(payload.code, otp.code_hash):
-        otp.attempts += 1
-        session.add(otp)
+    if not verify_otp_code(payload.code, pending.code_hash):
+        pending.attempts += 1
+        session.add(pending)
         session.commit()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid verification code")
 
-    user.email_verified = True
-    otp.used_at = datetime.now(UTC)
+    existing_user = session.exec(select(UserAccount).where(UserAccount.email == email)).first()
+    if existing_user:
+        session.delete(pending)
+        session.commit()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
+
+    if pending.birth_date is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Pending registration missing birth date",
+        )
+
+    user = UserAccount(
+        email=email,
+        username=pending.username,
+        password_hash=pending.password_hash,
+        sex=pending.sex,
+        birth_date=pending.birth_date,
+        email_verified=True,
+        onboarding_completed=False,
+    )
     session.add(user)
-    session.add(otp)
+    session.flush()
+    session.delete(pending)
+
+    user.email_verified = True
+    session.add(user)
     session.commit()
 
     token = create_access_token(user.id, user.email)
@@ -592,7 +994,7 @@ def verify_email(
     return AuthResponse(
         access_token=token,
         user=_auth_user(user),
-        profile=_profile_to_read(profile) if profile else None,
+        profile=_profile_to_read(profile, user) if profile else None,
     )
 
 
@@ -605,8 +1007,20 @@ def login(
     _rate_limit(request, scope="auth_login", limit=12, window_seconds=60)
     email = payload.email.strip().lower()
     user = session.exec(select(UserAccount).where(UserAccount.email == email)).first()
-    if not user or not verify_password(payload.password, user.password_hash):
+    if not user:
+        pending = session.exec(select(PendingRegistration).where(PendingRegistration.email == email)).first()
+        if pending:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Email pending verification. Complete code verification first.",
+            )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+
+    if not verify_password(payload.password, user.password_hash):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+
+    if not user.email_verified:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Email is not verified")
 
     token = create_access_token(user.id, user.email)
     profile = _load_profile(session, user.id)
@@ -614,7 +1028,7 @@ def login(
     return AuthResponse(
         access_token=token,
         user=_auth_user(user),
-        profile=_profile_to_read(profile) if profile else None,
+        profile=_profile_to_read(profile, user) if profile else None,
     )
 
 
@@ -624,7 +1038,10 @@ def me(
     session: Annotated[Session, Depends(get_session)],
 ) -> MeResponse:
     profile = _load_profile(session, current_user.id)
-    return MeResponse(user=_auth_user(current_user), profile=_profile_to_read(profile) if profile else None)
+    return MeResponse(
+        user=_auth_user(current_user),
+        profile=_profile_to_read(profile, current_user) if profile else None,
+    )
 
 
 @router.get("/user/ai-key/status", response_model=UserAIKeyStatusResponse)
@@ -701,14 +1118,15 @@ def upsert_profile(
     session: Annotated[Session, Depends(get_session)],
 ) -> ProfileRead:
     profile = _load_profile(session, current_user.id)
+    derived_age = _age_from_birth_date(current_user.birth_date)
 
     if profile is None:
         profile = UserProfile(
             user_id=current_user.id,
             weight_kg=payload.weight_kg,
             height_cm=payload.height_cm,
-            age=payload.age,
-            sex=payload.sex,
+            age=derived_age if derived_age is not None else payload.age,
+            sex=current_user.sex,
             activity_level=payload.activity_level,
             goal_type=payload.goal_type,
             weekly_weight_goal_kg=payload.weekly_weight_goal_kg,
@@ -723,9 +1141,13 @@ def upsert_profile(
         session.add(profile)
     else:
         profile.weight_kg = payload.weight_kg
-        profile.height_cm = payload.height_cm
-        profile.age = payload.age
-        profile.sex = payload.sex
+        if abs(profile.height_cm - payload.height_cm) > 1e-6:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Altura bloqueada: no se puede modificar tras crear la cuenta.",
+            )
+        profile.age = derived_age if derived_age is not None else profile.age
+        profile.sex = current_user.sex
         profile.activity_level = payload.activity_level
         profile.goal_type = payload.goal_type
         profile.weekly_weight_goal_kg = payload.weekly_weight_goal_kg
@@ -743,7 +1165,7 @@ def upsert_profile(
     session.add(profile)
     session.commit()
     session.refresh(profile)
-    return _profile_to_read(profile)
+    return _profile_to_read(profile, current_user)
 
 
 @router.get("/me/analysis", response_model=ProfileAnalysisResponse)
@@ -784,7 +1206,7 @@ def me_analysis(
         )
 
     return ProfileAnalysisResponse(
-        profile=_profile_to_read(profile),
+        profile=_profile_to_read(profile, current_user),
         recommended_goal=DailyGoalUpsert(**recommended),
         goal_feedback_today=feedback,
         suggested_kcal_adjustment=kcal_adjustment,
@@ -876,6 +1298,8 @@ def create_body_weight_log(
     profile = _load_profile(session, current_user.id)
     if profile:
         profile.weight_kg = payload.weight_kg
+        profile.age = _age_from_birth_date(current_user.birth_date) if current_user.birth_date else profile.age
+        profile.sex = current_user.sex
         profile.bmi = bmi(profile.weight_kg, profile.height_cm)
         profile.body_fat_percent = body_fat_percent(profile)
         profile.updated_at = datetime.now(UTC)
@@ -923,6 +1347,8 @@ def create_body_measurement_log(
 
     profile = _load_profile(session, current_user.id)
     if profile:
+        profile.age = _age_from_birth_date(current_user.birth_date) if current_user.birth_date else profile.age
+        profile.sex = current_user.sex
         profile.waist_cm = payload.waist_cm
         profile.neck_cm = payload.neck_cm
         profile.hip_cm = payload.hip_cm
@@ -1095,13 +1521,21 @@ def body_summary(
         body_fat_label, _ = body_fat_category(body_fat_value, body_fat_profile.sex)
 
     today = datetime.now(UTC).date()
-    today_summary = _day_summary(day=today, current_user=current_user, session=session)
+    today_summary = _day_summary(day=today, current_user=current_user, session=session, include_intakes=False)
+    has_intakes_today = bool(
+        session.exec(
+            select(func.count(Intake.id))
+            .where(Intake.user_id == current_user.id)
+            .where(Intake.created_at >= datetime.combine(today, time.min).replace(tzinfo=UTC))
+            .where(Intake.created_at < datetime.combine(today + timedelta(days=1), time.min).replace(tzinfo=UTC))
+        ).one()
+    )
     hints = coach_hints(
         consumed_kcal=today_summary.consumed.kcal,
         kcal_goal=today_summary.goal.kcal_goal if today_summary.goal else None,
         consumed_protein_g=today_summary.consumed.protein_g,
         protein_goal=today_summary.goal.protein_goal if today_summary.goal else None,
-        has_intakes_today=len(today_summary.intakes) > 0,
+        has_intakes_today=has_intakes_today,
         weekly_weight_delta=weekly_change,
         latest_weight_kg=latest_weight.weight_kg if latest_weight else profile.weight_kg if profile else None,
         goal_type=profile.goal_type if profile else None,
@@ -1231,7 +1665,16 @@ def _tokenize_search_text(value: str) -> list[str]:
     normalized = _normalize_search_text(value)
     if not normalized:
         return []
-    return [token for token in normalized.split(" ") if token]
+    stopwords = {"de", "del", "la", "el", "los", "las", "con", "sin", "para", "por", "al", "en", "y"}
+    tokens = [token for token in normalized.split(" ") if token and token not in stopwords]
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for token in tokens:
+        if token in seen:
+            continue
+        seen.add(token)
+        deduped.append(token)
+    return deduped
 
 
 def _similarity_bonus(query: str, target: str, *, weight: float) -> float:
@@ -1253,12 +1696,12 @@ def _minimum_text_score_for_query(query: str) -> float:
     normalized = _normalize_search_text(query)
     length = len(normalized)
     if length <= 2:
-        return 14.0
+        return 9.0
     if length <= 4:
-        return 24.0
+        return 18.0
     if length <= 7:
-        return 34.0
-    return 44.0
+        return 30.0
+    return 40.0
 
 
 def _text_match_score(query: str, name: str, brand: str | None, barcode: str | None) -> float:
@@ -1275,21 +1718,21 @@ def _text_match_score(query: str, name: str, brand: str | None, barcode: str | N
 
     score = 0.0
     if name_l == q:
-        score += 700.0
+        score += 820.0
     elif name_l.startswith(q):
-        score += 450.0
+        score += 500.0
     elif q in name_l:
-        score += 260.0
+        score += 300.0
 
     if brand_l == q:
-        score += 320.0
+        score += 400.0
     elif brand_l.startswith(q):
-        score += 180.0
+        score += 230.0
     elif q in brand_l:
-        score += 90.0
+        score += 130.0
 
-    score += _similarity_bonus(q, name_l, weight=220.0)
-    score += _similarity_bonus(q, brand_l, weight=140.0)
+    score += _similarity_bonus(q, name_l, weight=240.0)
+    score += _similarity_bonus(q, brand_l, weight=180.0)
 
     query_tokens = [token for token in q.split(" ") if len(token) >= 2]
     name_tokens = [token for token in name_l.split(" ") if len(token) >= 2]
@@ -1302,10 +1745,10 @@ def _text_match_score(query: str, name: str, brand: str | None, barcode: str | N
 
     for token in query_tokens:
         if token in name_tokens:
-            score += 70.0
+            score += 85.0
             continue
         if token in brand_tokens:
-            score += 52.0
+            score += 72.0
             continue
 
         best_name_ratio = max(
@@ -1318,25 +1761,50 @@ def _text_match_score(query: str, name: str, brand: str | None, barcode: str | N
         )
         best_ratio = max(best_name_ratio, best_brand_ratio)
         if best_ratio >= 0.9:
-            score += 52.0
+            score += 56.0
         elif best_ratio >= 0.82:
-            score += 34.0
+            score += 38.0
         elif best_ratio >= 0.74:
-            score += 20.0
+            score += 24.0
 
     return score
 
 
 def _source_priority_score(product: Product) -> float:
     if product.is_verified:
-        return 240.0
+        return 290.0
     if product.source in {"community_verified", "local_verified"}:
-        return 220.0
+        return 270.0
     if product.source == "community":
-        return 130.0
+        return 190.0
     if product.source == "openfoodfacts":
-        return 60.0
-    return 100.0
+        return 85.0
+    return 120.0
+
+
+def _name_legibility_penalty(name: str) -> float:
+    normalized = name.strip()
+    if not normalized:
+        return -60.0
+    alpha_count = sum(1 for ch in normalized if ch.isalpha())
+    ratio = alpha_count / max(len(normalized), 1)
+    penalty = 0.0
+    if ratio < 0.55:
+        penalty -= 65.0
+    if len(normalized) < 4:
+        penalty -= 20.0
+    if normalized.count("_") >= 2:
+        penalty -= 12.0
+    return penalty
+
+
+def _nutrition_quality_penalty(product: Product) -> float:
+    penalty = 0.0
+    if product.kcal <= 0:
+        penalty -= 65.0
+    if product.protein_g <= 0 and product.fat_g <= 0 and product.carbs_g <= 0:
+        penalty -= 45.0
+    return penalty
 
 
 def _local_search_score(
@@ -1354,13 +1822,345 @@ def _local_search_score(
         else _text_match_score(query, product.name, product.brand, product.barcode)
     )
     score += _source_priority_score(product)
+    score += _name_legibility_penalty(product.name)
+    score += _nutrition_quality_penalty(product)
     if product.created_by_user_id is not None:
-        score += 18.0
+        score += 28.0
     if is_favorite:
-        score += 180.0
-    score += min(user_use_count, 30) * 14.0
-    score += min(global_use_count, 80) * 2.2
+        score += 220.0
+    score += min(user_use_count, 30) * 15.0
+    score += min(global_use_count, 100) * 2.4
     return score
+
+
+def _remote_country_tags(candidate: dict[str, object]) -> set[str]:
+    tags_raw = candidate.get("countries_tags")
+    if isinstance(tags_raw, list):
+        return {_normalize_search_text(str(item)) for item in tags_raw if item}
+    if isinstance(tags_raw, str) and tags_raw.strip():
+        return {_normalize_search_text(tags_raw)}
+    return set()
+
+
+def _remote_country_relevance_score(candidate: dict[str, object]) -> float:
+    tags = _remote_country_tags(candidate)
+    countries_text = _normalize_search_text(str(candidate.get("countries") or ""))
+    spain_tags = {"en:spain", "es:espana", "es:españa", "spain", "espana", "españa"}
+    if tags & spain_tags or "spain" in countries_text or "espana" in countries_text or "españa" in countries_text:
+        return 260.0
+
+    nearby_eu_tags = {
+        "en:portugal",
+        "en:france",
+        "en:italy",
+        "en:germany",
+        "en:belgium",
+        "en:netherlands",
+        "en:ireland",
+        "en:austria",
+        "en:poland",
+        "en:sweden",
+        "en:denmark",
+        "en:finland",
+    }
+    if tags & nearby_eu_tags:
+        return 130.0
+
+    if tags or countries_text:
+        return -80.0
+    return 0.0
+
+
+def _remote_language_relevance_score(candidate: dict[str, object]) -> float:
+    lang = _normalize_search_text(str(candidate.get("lang") or ""))
+    if lang.startswith("es"):
+        return 85.0
+    if lang.startswith(("pt", "it", "fr")):
+        return 26.0
+    if lang:
+        return -18.0
+    return 0.0
+
+
+def _remote_candidate_score(query: str, candidate: dict[str, object]) -> float:
+    name = str(candidate.get("name") or "")
+    brand = candidate.get("brand")
+    barcode = candidate.get("barcode")
+    score = _text_match_score(query, name, str(brand) if brand is not None else None, str(barcode) if barcode else None)
+    score += _remote_country_relevance_score(candidate)
+    score += _remote_language_relevance_score(candidate)
+    score += _name_legibility_penalty(name)
+
+    kcal = _as_float_or_none(candidate.get("kcal"))
+    protein = _as_float_or_none(candidate.get("protein_g"))
+    fat = _as_float_or_none(candidate.get("fat_g"))
+    carbs = _as_float_or_none(candidate.get("carbs_g"))
+    if kcal is None or kcal <= 0:
+        score -= 45.0
+    if all(value is None or value <= 0 for value in (protein, fat, carbs)):
+        score -= 30.0
+    return score
+
+
+def _local_search_candidates_postgres(
+    *,
+    session: Session,
+    current_user: UserAccount,
+    query: str,
+    bounded_limit: int,
+) -> list[tuple[Product, float]]:
+    normalized = _normalize_search_text(query)
+    if not normalized:
+        return []
+
+    tokens = _tokenize_search_text(query)[:5]
+    visibility = or_(
+        Product.created_by_user_id == current_user.id,
+        and_(Product.is_public.is_(True), Product.is_hidden.is_(False), Product.status == "approved"),
+    )
+
+    favorite_subq = (
+        select(UserFavoriteProduct.product_id.label("fav_product_id"))
+        .where(UserFavoriteProduct.user_id == current_user.id)
+        .subquery()
+    )
+    user_use_subq = (
+        select(
+            Intake.product_id.label("user_product_id"),
+            func.count(Intake.id).label("user_use_count"),
+        )
+        .where(Intake.user_id == current_user.id)
+        .group_by(Intake.product_id)
+        .subquery()
+    )
+    global_use_subq = (
+        select(
+            Intake.product_id.label("global_product_id"),
+            func.count(Intake.id).label("global_use_count"),
+        )
+        .group_by(Intake.product_id)
+        .subquery()
+    )
+
+    name_norm = func.lower(func.immutable_unaccent(func.coalesce(Product.name, "")))
+    brand_norm = func.lower(func.immutable_unaccent(func.coalesce(Product.brand, "")))
+    combined_norm = func.trim(func.concat_ws(" ", name_norm, brand_norm))
+    ts_rank_expr = cast(
+        func.ts_rank_cd(
+            func.to_tsvector("simple", combined_norm),
+            func.plainto_tsquery("simple", normalized),
+        ),
+        Float,
+    )
+    sim_combined = cast(func.similarity(combined_norm, normalized), Float)
+    sim_name = cast(func.similarity(name_norm, normalized), Float)
+    sim_brand = cast(func.similarity(brand_norm, normalized), Float)
+
+    exact_name = case((name_norm == normalized, 1.0), else_=0.0)
+    prefix_name = case((name_norm.like(f"{normalized}%"), 1.0), else_=0.0)
+    contains_name = case((name_norm.like(f"%{normalized}%"), 1.0), else_=0.0)
+    exact_brand = case((brand_norm == normalized, 1.0), else_=0.0)
+    prefix_brand = case((brand_norm.like(f"{normalized}%"), 1.0), else_=0.0)
+    contains_brand = case((brand_norm.like(f"%{normalized}%"), 1.0), else_=0.0)
+
+    token_hits = literal(0.0)
+    token_filters: list[object] = []
+    for token in tokens:
+        token_hits = token_hits + case((combined_norm.like(f"%{token}%"), 1.0), else_=0.0)
+        token_filters.append(combined_norm.like(f"%{token}%"))
+
+    source_score = case(
+        (Product.is_verified.is_(True), 5.0),
+        (Product.source.in_(["local_verified", "community_verified"]), 4.3),
+        (Product.source == "community", 3.1),
+        (Product.source == "openfoodfacts", 1.2),
+        else_=2.0,
+    )
+    favorite_bonus = case((favorite_subq.c.fav_product_id.is_not(None), 2.2), else_=0.0)
+    own_product_bonus = case((Product.created_by_user_id == current_user.id, 1.15), else_=0.0)
+    user_use_bonus = func.least(cast(func.coalesce(user_use_subq.c.user_use_count, 0), Float), 30.0) * 0.16
+    global_use_bonus = func.least(cast(func.coalesce(global_use_subq.c.global_use_count, 0), Float), 140.0) * 0.03
+    poor_kcal_penalty = case((Product.kcal <= 0, -1.2), else_=0.0)
+    poor_macros_penalty = case(
+        (and_(Product.protein_g <= 0, Product.fat_g <= 0, Product.carbs_g <= 0), -1.4),
+        else_=0.0,
+    )
+
+    score_expr = (
+        exact_name * 15.0
+        + prefix_name * 9.0
+        + contains_name * 4.0
+        + exact_brand * 9.0
+        + prefix_brand * 6.0
+        + contains_brand * 3.2
+        + token_hits * 2.0
+        + sim_combined * 7.5
+        + sim_name * 6.3
+        + sim_brand * 4.8
+        + ts_rank_expr * 9.0
+        + source_score
+        + favorite_bonus
+        + own_product_bonus
+        + user_use_bonus
+        + global_use_bonus
+        + poor_kcal_penalty
+        + poor_macros_penalty
+    )
+
+    pre_filters = [
+        Product.barcode.ilike(f"%{query.strip()}%"),
+        name_norm.like(f"%{normalized}%"),
+        brand_norm.like(f"%{normalized}%"),
+        sim_combined >= 0.20,
+        sim_name >= 0.22,
+        sim_brand >= 0.24,
+    ]
+    pre_filters.extend(token_filters)
+
+    stmt = (
+        select(Product, score_expr.label("search_score"))
+        .select_from(Product)
+        .outerjoin(favorite_subq, favorite_subq.c.fav_product_id == Product.id)
+        .outerjoin(user_use_subq, user_use_subq.c.user_product_id == Product.id)
+        .outerjoin(global_use_subq, global_use_subq.c.global_product_id == Product.id)
+        .where(visibility)
+        .where(or_(*pre_filters))
+        .order_by(desc(score_expr), desc(Product.is_verified), desc(Product.created_at))
+        .limit(max(60, bounded_limit * 4))
+    )
+
+    rows = session.exec(stmt).all()
+    threshold = _minimum_text_score_for_query(query)
+    ranked: list[tuple[Product, float]] = []
+    for row in rows:
+        product = row[0]
+        base_score = float(row[1] or 0.0)
+        final_score = base_score + _name_legibility_penalty(product.name) + _nutrition_quality_penalty(product)
+        if final_score < threshold:
+            continue
+        ranked.append((product, final_score))
+
+    ranked.sort(key=lambda entry: (entry[1], entry[0].is_verified, entry[0].created_at), reverse=True)
+    return ranked[: max(40, bounded_limit * 3)]
+
+
+def _local_search_candidates_fallback(
+    *,
+    session: Session,
+    current_user: UserAccount,
+    query: str,
+    bounded_limit: int,
+) -> list[tuple[Product, float]]:
+    pattern = f"%{query}%"
+    query_tokens = _tokenize_search_text(query)
+    token_patterns = [f"%{token}%" for token in query_tokens[:4]]
+    visibility = or_(
+        Product.created_by_user_id == current_user.id,
+        and_(Product.is_public.is_(True), Product.is_hidden.is_(False), Product.status == "approved"),
+    )
+
+    text_filters = [
+        Product.name.ilike(pattern),
+        Product.brand.ilike(pattern),
+        Product.barcode.ilike(pattern),
+    ]
+    for token_pattern in token_patterns:
+        text_filters.extend([Product.name.ilike(token_pattern), Product.brand.ilike(token_pattern)])
+
+    candidate_rows = session.exec(
+        select(Product)
+        .where(visibility)
+        .where(or_(*text_filters))
+        .order_by(desc(Product.is_verified), desc(Product.created_at))
+        .limit(max(180, bounded_limit * 8))
+    ).all()
+
+    # If strict LIKE candidates are sparse, pull a broader pool and let Python ranking
+    # recover fuzzy matches (useful on sqlite/tests where pg_trgm isn't available).
+    if len(candidate_rows) < max(24, bounded_limit * 2):
+        fallback_rows = session.exec(
+            select(Product)
+            .where(visibility)
+            .order_by(desc(Product.is_verified), desc(Product.created_at))
+            .limit(max(240, bounded_limit * 12))
+        ).all()
+        seen_ids = {product.id for product in candidate_rows if product.id is not None}
+        for fallback in fallback_rows:
+            if fallback.id is None or fallback.id in seen_ids:
+                continue
+            candidate_rows.append(fallback)
+            seen_ids.add(fallback.id)
+
+    product_ids = [product.id for product in candidate_rows if product.id is not None]
+    favorite_ids: set[int] = set()
+    user_use_counts: dict[int, int] = {}
+    global_use_counts: dict[int, int] = {}
+
+    if product_ids:
+        favorite_rows = session.exec(
+            select(UserFavoriteProduct.product_id)
+            .where(UserFavoriteProduct.user_id == current_user.id)
+            .where(UserFavoriteProduct.product_id.in_(product_ids))
+        ).all()
+        favorite_ids = set(favorite_rows)
+
+        user_intakes = session.exec(
+            select(Intake.product_id)
+            .where(Intake.user_id == current_user.id)
+            .where(Intake.product_id.in_(product_ids))
+        ).all()
+        for product_id in user_intakes:
+            user_use_counts[product_id] = user_use_counts.get(product_id, 0) + 1
+
+        global_intakes = session.exec(select(Intake.product_id).where(Intake.product_id.in_(product_ids))).all()
+        for product_id in global_intakes:
+            global_use_counts[product_id] = global_use_counts.get(product_id, 0) + 1
+
+    minimum_text_score = _minimum_text_score_for_query(query)
+    ranked: list[tuple[Product, float]] = []
+    for product in candidate_rows:
+        text_score = _text_match_score(query, product.name, product.brand, product.barcode)
+        if text_score < minimum_text_score:
+            continue
+        final_score = _local_search_score(
+            query=query,
+            product=product,
+            is_favorite=(product.id or -1) in favorite_ids,
+            user_use_count=user_use_counts.get(product.id or -1, 0),
+            global_use_count=global_use_counts.get(product.id or -1, 0),
+            text_score=text_score,
+        )
+        ranked.append((product, final_score))
+
+    ranked.sort(key=lambda entry: (entry[1], entry[0].is_verified, entry[0].created_at), reverse=True)
+    return ranked[: max(40, bounded_limit * 3)]
+
+
+def _local_search_candidates(
+    *,
+    session: Session,
+    current_user: UserAccount,
+    query: str,
+    bounded_limit: int,
+) -> list[tuple[Product, float]]:
+    bind = session.get_bind()
+    dialect = bind.dialect.name if bind is not None else ""
+    if dialect == "postgresql":
+        try:
+            return _local_search_candidates_postgres(
+                session=session,
+                current_user=current_user,
+                query=query,
+                bounded_limit=bounded_limit,
+            )
+        except SQLAlchemyError as exc:
+            logger.warning("Postgres search ranking fallback for query '%s': %s", query, exc)
+    return _local_search_candidates_fallback(
+        session=session,
+        current_user=current_user,
+        query=query,
+        bounded_limit=bounded_limit,
+    )
 
 
 def _off_search_preview_product(item: dict[str, object], synthetic_id: int) -> ProductRead:
@@ -1456,6 +2256,23 @@ def create_community_food(
     return ProductRead.model_validate(product)
 
 
+@router.get("/foods/mine", response_model=list[ProductRead])
+def list_my_community_foods(
+    current_user: Annotated[UserAccount, Depends(get_ready_user)],
+    session: Annotated[Session, Depends(get_session)],
+    limit: int = 100,
+) -> list[ProductRead]:
+    bounded_limit = max(1, min(limit, 300))
+    rows = session.exec(
+        select(Product)
+        .where(Product.created_by_user_id == current_user.id)
+        .where(Product.is_hidden.is_(False))
+        .order_by(desc(Product.created_at))
+        .limit(bounded_limit)
+    ).all()
+    return [ProductRead.model_validate(row) for row in rows]
+
+
 @router.get("/foods/search", response_model=FoodSearchResponse)
 async def search_foods(
     q: str,
@@ -1471,108 +2288,23 @@ async def search_foods(
         )
 
     bounded_limit = max(1, min(limit, 40))
-    pattern = f"%{query}%"
-    query_tokens = _tokenize_search_text(query)
-    token_patterns = [f"%{token}%" for token in query_tokens[:4]]
-
-    visibility = or_(
-        Product.created_by_user_id == current_user.id,
-        and_(Product.is_public.is_(True), Product.is_hidden.is_(False), Product.status == "approved"),
+    local_candidates = _local_search_candidates(
+        session=session,
+        current_user=current_user,
+        query=query,
+        bounded_limit=bounded_limit,
     )
-
-    text_filters = [
-        Product.name.ilike(pattern),
-        Product.brand.ilike(pattern),
-        Product.barcode.ilike(pattern),
-    ]
-    for token_pattern in token_patterns:
-        text_filters.extend([Product.name.ilike(token_pattern), Product.brand.ilike(token_pattern)])
-
-    candidate_rows = session.exec(
-        select(Product)
-        .where(visibility)
-        .where(or_(*text_filters))
-        .order_by(desc(Product.is_verified), desc(Product.created_at))
-        .limit(max(80, bounded_limit * 5))
-    ).all()
-
-    # When strict LIKE search is sparse, add a wider local pool and rank in Python.
-    if len(candidate_rows) < max(24, bounded_limit * 2):
-        fallback_rows = session.exec(
-            select(Product)
-            .where(visibility)
-            .order_by(desc(Product.is_verified), desc(Product.created_at))
-            .limit(max(180, bounded_limit * 10))
-        ).all()
-        seen_candidate_ids = {product.id for product in candidate_rows if product.id is not None}
-        for fallback in fallback_rows:
-            if fallback.id is None:
-                continue
-            if fallback.id in seen_candidate_ids:
-                continue
-            candidate_rows.append(fallback)
-            seen_candidate_ids.add(fallback.id)
-
-    product_ids = [product.id for product in candidate_rows if product.id is not None]
-    favorite_ids: set[int] = set()
-    user_use_counts: dict[int, int] = {}
-    global_use_counts: dict[int, int] = {}
-
-    if product_ids:
-        favorite_rows = session.exec(
-            select(UserFavoriteProduct.product_id)
-            .where(UserFavoriteProduct.user_id == current_user.id)
-            .where(UserFavoriteProduct.product_id.in_(product_ids))
-        ).all()
-        favorite_ids = set(favorite_rows)
-
-        user_intakes = session.exec(
-            select(Intake.product_id)
-            .where(Intake.user_id == current_user.id)
-            .where(Intake.product_id.in_(product_ids))
-        ).all()
-        for product_id in user_intakes:
-            user_use_counts[product_id] = user_use_counts.get(product_id, 0) + 1
-
-        global_intakes = session.exec(select(Intake.product_id).where(Intake.product_id.in_(product_ids))).all()
-        for product_id in global_intakes:
-            global_use_counts[product_id] = global_use_counts.get(product_id, 0) + 1
-
-    minimum_text_score = _minimum_text_score_for_query(query)
-    scored_rows: list[tuple[float, float, Product]] = []
-    for product in candidate_rows:
-        text_score = _text_match_score(query, product.name, product.brand, product.barcode)
-        if text_score < minimum_text_score:
-            continue
-        score = _local_search_score(
-            query=query,
-            product=product,
-            is_favorite=(product.id or -1) in favorite_ids,
-            user_use_count=user_use_counts.get(product.id or -1, 0),
-            global_use_count=global_use_counts.get(product.id or -1, 0),
-            text_score=text_score,
-        )
-        scored_rows.append((score, text_score, product))
-
-    ranked_rows = [
-        row[2]
-        for row in sorted(
-            scored_rows,
-            key=lambda item: (item[0], item[1], item[2].created_at),
-            reverse=True,
-        )
-    ]
 
     results: list[FoodSearchItem] = []
     seen_product_ids: set[int] = set()
-    seen_barcodes: set[str] = set()
+    seen_barcodes: set[str] = {
+        product.barcode for product, _score in local_candidates if product.barcode and product.barcode.strip()
+    }
 
-    for product in ranked_rows:
+    for product, _score in local_candidates:
         if product.id is None or product.id in seen_product_ids:
             continue
         seen_product_ids.add(product.id)
-        if product.barcode:
-            seen_barcodes.add(product.barcode)
         results.append(
             FoodSearchItem(
                 product=ProductRead.model_validate(product),
@@ -1583,13 +2315,17 @@ async def search_foods(
         if len(results) >= bounded_limit:
             return FoodSearchResponse(query=query, results=results)
 
+    is_barcode_query = EAN_PATTERN.match(query) is not None
+    has_exact_local_barcode = any(product.barcode == query for product, _score in local_candidates)
+
     should_try_openfoodfacts_barcode = EAN_PATTERN.match(query) is not None and all(
-        product.barcode != query for product in ranked_rows
+        product.barcode != query for product, _score in local_candidates
     )
-    if should_try_openfoodfacts_barcode and len(results) < bounded_limit:
+    if should_try_openfoodfacts_barcode and not has_exact_local_barcode and len(results) < bounded_limit:
         try:
             off_product = await fetch_openfoodfacts_product(query)
-        except OpenFoodFactsClientError:
+        except OpenFoodFactsClientError as exc:
+            logger.warning("OpenFoodFacts barcode lookup failed for %s: %s", query, exc)
             off_product = None
 
         if off_product and not off_missing_critical_fields(off_product):
@@ -1630,15 +2366,43 @@ async def search_foods(
                     )
                 )
 
-    should_try_openfoodfacts_text = EAN_PATTERN.match(query) is None and len(results) < max(5, bounded_limit // 2)
+    minimum_text_score = _minimum_text_score_for_query(query)
+    local_top_score = local_candidates[0][1] if local_candidates else 0.0
+    strong_local_count = sum(1 for _product, score in local_candidates if score >= (minimum_text_score + 24.0))
+    has_high_quality_local = bool(local_candidates) and local_top_score >= (minimum_text_score + 60.0)
+    has_enough_strong_local = len(results) >= min(8, bounded_limit) and strong_local_count >= 5
+    should_try_openfoodfacts_text = (
+        not is_barcode_query
+        and len(results) < bounded_limit
+        and not has_enough_strong_local
+        and (len(results) < min(4, bounded_limit) or strong_local_count < 3 or not has_high_quality_local)
+        and local_top_score < (minimum_text_score + 78.0)
+    )
     if should_try_openfoodfacts_text:
         try:
-            off_candidates = await search_openfoodfacts_products(query, limit=bounded_limit * 2)
-        except OpenFoodFactsClientError:
+            off_candidates = await search_openfoodfacts_products(query, limit=min(20, max(8, bounded_limit + 4)))
+        except OpenFoodFactsClientError as exc:
+            logger.warning("OpenFoodFacts text search failed for '%s': %s", query, exc)
             off_candidates = []
 
+        remote_scored = [
+            (candidate, _remote_candidate_score(query, candidate))
+            for candidate in off_candidates
+        ]
+        remote_scored.sort(key=lambda item: item[1], reverse=True)
+
+        remote_slots = bounded_limit - len(results)
+        if len(results) >= 4:
+            remote_slots = min(remote_slots, 4)
+        else:
+            remote_slots = min(remote_slots, 8)
+
+        minimum_remote_score = max(22.0, minimum_text_score * 0.62)
         synthetic_id = -1
-        for candidate in off_candidates:
+        appended = 0
+        for candidate, remote_score in remote_scored:
+            if remote_score < minimum_remote_score:
+                continue
             barcode = str(candidate.get("barcode") or "").strip()
             if not barcode or barcode in seen_barcodes:
                 continue
@@ -1651,7 +2415,8 @@ async def search_foods(
             )
             synthetic_id -= 1
             seen_barcodes.add(barcode)
-            if len(results) >= bounded_limit:
+            appended += 1
+            if len(results) >= bounded_limit or appended >= remote_slots:
                 break
 
     return FoodSearchResponse(query=query, results=results)
@@ -1739,6 +2504,21 @@ async def product_by_barcode(
             message="Missing nutrition fields. Capture the label.",
         )
 
+    existing_after_fetch = session.exec(select(Product).where(Product.barcode == ean)).first()
+    if existing_after_fetch:
+        if existing_after_fetch.is_hidden and existing_after_fetch.created_by_user_id != current_user.id:
+            return ProductLookupResponse(source="not_found", message="Product not found")
+        pref = session.exec(
+            select(UserProductPreference)
+            .where(UserProductPreference.user_id == current_user.id)
+            .where(UserProductPreference.product_id == existing_after_fetch.id)
+        ).first()
+        return ProductLookupResponse(
+            source="local",
+            product=ProductRead.model_validate(existing_after_fetch),
+            preferred_serving=_preference_payload(pref),
+        )
+
     product = Product(
         barcode=ean,
         name="",
@@ -1759,8 +2539,24 @@ async def product_by_barcode(
     )
     _apply_openfoodfacts_payload(product, off_product)
     session.add(product)
-    session.commit()
-    session.refresh(product)
+    try:
+        session.commit()
+        session.refresh(product)
+    except SQLAlchemyError:
+        session.rollback()
+        existing = session.exec(select(Product).where(Product.barcode == ean)).first()
+        if existing:
+            pref = session.exec(
+                select(UserProductPreference)
+                .where(UserProductPreference.user_id == current_user.id)
+                .where(UserProductPreference.product_id == existing.id)
+            ).first()
+            return ProductLookupResponse(
+                source="local",
+                product=ProductRead.model_validate(existing),
+                preferred_serving=_preference_payload(pref),
+            )
+        raise
 
     return ProductLookupResponse(source="openfoodfacts_imported", product=ProductRead.model_validate(product))
 
@@ -2079,10 +2875,14 @@ async def correct_product_by_barcode_from_label_photo(
 async def meal_photo_estimate_questions(
     request: Request,
     current_user: Annotated[UserAccount, Depends(get_ready_user)],
+    session: Annotated[Session, Depends(get_session)],
     description: Annotated[str | None, Form()] = None,
+    quantity_note: Annotated[str | None, Form()] = None,
+    locale: Annotated[str | None, Form()] = None,
     photos: Annotated[list[UploadFile] | None, File()] = None,
 ) -> MealEstimateQuestionsResponse:
     _rate_limit(request, scope="meal_questions", limit=12, window_seconds=60, key_suffix=str(current_user.id))
+    _cleanup_expired_meal_analysis(session, user_id=current_user.id)
     ai_credentials = _user_ai_provider_and_key(current_user, required=True)
     if not ai_credentials:
         raise HTTPException(
@@ -2093,15 +2893,33 @@ async def meal_photo_estimate_questions(
     photo_files = photos or []
     if not photo_files:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Adjunta al menos una foto.")
+    if len(photo_files) > MAX_MEAL_PHOTOS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Máximo {MAX_MEAL_PHOTOS} fotos por estimación.",
+        )
 
     try:
         result = await generate_meal_questions_with_ai(
             api_key=api_key,
             description=(description or "").strip(),
+            quantity_note=(quantity_note or "").strip() or None,
             photo_files=photo_files,
+            locale=_normalize_locale(locale),
         )
     except VisionAIError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+    analysis_id: str | None = None
+    analysis_expires_at: datetime | None = None
+    try:
+        analysis = await _store_meal_analysis(session=session, user_id=current_user.id, photo_files=photo_files)
+        analysis_id = analysis.id
+        analysis_expires_at = analysis.expires_at
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to persist meal photo analysis cache")
 
     return MealEstimateQuestionsResponse(
         model_used=result["model_used"],  # type: ignore[arg-type]
@@ -2109,6 +2927,8 @@ async def meal_photo_estimate_questions(
         question_items=result.get("question_items", []),  # type: ignore[arg-type]
         assumptions=result["assumptions"],  # type: ignore[arg-type]
         detected_ingredients=result["detected_ingredients"],  # type: ignore[arg-type]
+        analysis_id=analysis_id,
+        analysis_expires_at=analysis_expires_at,
     )
 
 
@@ -2118,11 +2938,17 @@ async def meal_photo_estimate_calculate(
     current_user: Annotated[UserAccount, Depends(get_ready_user)],
     session: Annotated[Session, Depends(get_session)],
     description: Annotated[str | None, Form()] = None,
+    locale: Annotated[str | None, Form()] = None,
+    analysis_id: Annotated[str | None, Form()] = None,
     answers_json: Annotated[str | None, Form()] = None,
     portion_size: Annotated[str | None, Form()] = None,
     has_added_fats: Annotated[bool | None, Form()] = None,
     quantity_note: Annotated[str | None, Form()] = None,
     adjust_percent: Annotated[int, Form()] = 0,
+    override_kcal: Annotated[float | None, Form()] = None,
+    override_protein_g: Annotated[float | None, Form()] = None,
+    override_fat_g: Annotated[float | None, Form()] = None,
+    override_carbs_g: Annotated[float | None, Form()] = None,
     commit: Annotated[bool, Form()] = False,
     photos: Annotated[list[UploadFile] | None, File()] = None,
 ) -> MealPhotoEstimateResponse:
@@ -2132,11 +2958,17 @@ async def meal_photo_estimate_calculate(
         current_user=current_user,
         session=session,
         description=description,
+        locale=locale,
+        analysis_id=analysis_id,
         answers_json=answers_json,
         portion_size=portion_size,
         has_added_fats=has_added_fats,
         quantity_note=quantity_note,
         adjust_percent=adjust_percent,
+        override_kcal=override_kcal,
+        override_protein_g=override_protein_g,
+        override_fat_g=override_fat_g,
+        override_carbs_g=override_carbs_g,
         commit=commit,
         photos=photos,
     )
@@ -2148,11 +2980,17 @@ async def intake_from_meal_photo_estimate(
     current_user: Annotated[UserAccount, Depends(get_ready_user)],
     session: Annotated[Session, Depends(get_session)],
     description: Annotated[str | None, Form()] = None,
+    locale: Annotated[str | None, Form()] = None,
+    analysis_id: Annotated[str | None, Form()] = None,
     answers_json: Annotated[str | None, Form()] = None,
     portion_size: Annotated[str | None, Form()] = None,
     has_added_fats: Annotated[bool | None, Form()] = None,
     quantity_note: Annotated[str | None, Form()] = None,
     adjust_percent: Annotated[int, Form()] = 0,
+    override_kcal: Annotated[float | None, Form()] = None,
+    override_protein_g: Annotated[float | None, Form()] = None,
+    override_fat_g: Annotated[float | None, Form()] = None,
+    override_carbs_g: Annotated[float | None, Form()] = None,
     commit: Annotated[bool, Form()] = False,
     photos: Annotated[list[UploadFile] | None, File()] = None,
 ) -> MealPhotoEstimateResponse:
@@ -2165,17 +3003,34 @@ async def intake_from_meal_photo_estimate(
         )
     _, api_key = ai_credentials
 
-    photo_files = photos or []
-    if not photo_files:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Adjunta al menos una foto.")
+    using_cached_analysis = False
+    cached_analysis: MealPhotoAnalysis | None = None
+    if analysis_id and analysis_id.strip():
+        photo_files, cached_analysis = _load_meal_analysis_files(
+            session=session,
+            analysis_id=analysis_id.strip(),
+            user_id=current_user.id,
+        )
+        using_cached_analysis = True
+    else:
+        photo_files = photos or []
+        if not photo_files:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Adjunta al menos una foto.")
+        if len(photo_files) > MAX_MEAL_PHOTOS:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Máximo {MAX_MEAL_PHOTOS} fotos por estimación.",
+            )
 
+    normalized_locale = _normalize_locale(locale)
     resolved_description, normalized_portion, resolved_added_fats, resolved_quantity_note, answer_context = (
         _resolve_meal_inputs(
-        description=description,
-        answers_json=answers_json,
-        portion_size=portion_size,
-        has_added_fats=has_added_fats,
-        quantity_note=quantity_note,
+            description=description,
+            answers_json=answers_json,
+            portion_size=portion_size,
+            has_added_fats=has_added_fats,
+            quantity_note=quantity_note,
+            locale=normalized_locale,
         )
     )
     normalized_adjust = max(-30, min(30, adjust_percent))
@@ -2189,9 +3044,13 @@ async def intake_from_meal_photo_estimate(
             photo_files=photo_files,
             adjust_percent=normalized_adjust,
             answers=answer_context,
+            locale=normalized_locale,
         )
     except VisionAIError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    finally:
+        if using_cached_analysis:
+            await _close_upload_files(photo_files)
 
     nutrition = result["nutrition"]  # type: ignore[assignment]
     preview_nutrients = {
@@ -2204,6 +3063,13 @@ async def intake_from_meal_photo_estimate(
         "fiber_g": float(nutrition.get("fiber_g") or 0.0),
         "salt_g": float(nutrition.get("salt_g") or 0.0),
     }
+    preview_nutrients = _apply_meal_preview_overrides(
+        preview_nutrients=preview_nutrients,
+        override_kcal=override_kcal,
+        override_protein_g=override_protein_g,
+        override_fat_g=override_fat_g,
+        override_carbs_g=override_carbs_g,
+    )
 
     response_base = {
         "saved": False,
@@ -2236,11 +3102,11 @@ async def intake_from_meal_photo_estimate(
 
     product_name = (description or "").strip()
     if not product_name:
-        product_name = "Comida estimada"
+        product_name = "Estimated meal" if normalized_locale == "en" else "Comida estimada"
 
     product = Product(
         barcode=None,
-        name=f"Estimación: {product_name[:72]}",
+        name=(f"Estimate: {product_name[:72]}" if normalized_locale == "en" else f"Estimación: {product_name[:72]}"),
         brand=None,
         image_url=None,
         nutrition_basis=NutritionBasis.per_serving,
@@ -2279,6 +3145,11 @@ async def intake_from_meal_photo_estimate(
     session.commit()
     session.refresh(product)
     session.refresh(intake)
+
+    if cached_analysis is not None:
+        _remove_meal_analysis_files(cached_analysis.image_meta_json)
+        session.delete(cached_analysis)
+        session.commit()
 
     nutrients = nutrients_for_quantity(product, serving_size)
     intake_payload = IntakeRead(
@@ -2516,6 +3387,7 @@ def _day_summary(
     day: date,
     current_user: Annotated[UserAccount, Depends(get_ready_user)],
     session: Annotated[Session, Depends(get_session)],
+    include_intakes: bool = True,
 ) -> DaySummary:
     start_dt = datetime.combine(day, time.min).replace(tzinfo=UTC)
     end_dt = datetime.combine(day + timedelta(days=1), time.min).replace(tzinfo=UTC)
@@ -2525,41 +3397,43 @@ def _day_summary(
         .where(Intake.user_id == current_user.id)
         .where(Intake.created_at >= start_dt)
         .where(Intake.created_at < end_dt)
+        .order_by(desc(Intake.created_at))
     ).all()
 
     consumed = zero_nutrients()
     rows: list[IntakeRead] = []
     product_cache: dict[int, Product] = {}
+    product_ids = {intake.product_id for intake in intakes}
+    if product_ids:
+        products = session.exec(select(Product).where(Product.id.in_(product_ids))).all()
+        product_cache = {product.id: product for product in products if product.id is not None}
 
     for intake in intakes:
         product = product_cache.get(intake.product_id)
-        if not product:
-            product = session.get(Product, intake.product_id)
-            if product:
-                product_cache[intake.product_id] = product
 
         if not product or intake.quantity_g is None:
             continue
 
         nutrients = nutrients_for_quantity(product, intake.quantity_g)
         consumed = sum_nutrients(consumed, nutrients)
-        rows.append(
-            IntakeRead(
-                id=intake.id,
-                product_id=intake.product_id,
-                product_name=product.name,
-                method=intake.method,
-                quantity_g=intake.quantity_g,
-                quantity_units=intake.quantity_units,
-                percent_pack=intake.percent_pack,
-                created_at=intake.created_at,
-                estimated=intake.estimated,
-                estimate_confidence=intake.estimate_confidence,
-                user_description=intake.user_description,
-                source_method=intake.source_method,
-                nutrients=nutrients,
+        if include_intakes:
+            rows.append(
+                IntakeRead(
+                    id=intake.id,
+                    product_id=intake.product_id,
+                    product_name=product.name,
+                    method=intake.method,
+                    quantity_g=intake.quantity_g,
+                    quantity_units=intake.quantity_units,
+                    percent_pack=intake.percent_pack,
+                    created_at=intake.created_at,
+                    estimated=intake.estimated,
+                    estimate_confidence=intake.estimate_confidence,
+                    user_description=intake.user_description,
+                    source_method=intake.source_method,
+                    nutrients=nutrients,
+                )
             )
-        )
 
     goal = session.exec(
         select(DailyGoal).where(DailyGoal.user_id == current_user.id).where(DailyGoal.date == day)
@@ -2597,7 +3471,7 @@ def _day_summary(
         goal=goal_payload,
         consumed=consumed,
         remaining=remaining,
-        intakes=rows,
+        intakes=rows if include_intakes else [],
         water_ml=water_ml,
     )
 
@@ -2764,26 +3638,70 @@ def month_calendar(
         .where(Intake.created_at < end_dt)
     ).all()
 
-    stats: dict[date, dict[str, float]] = {}
-    product_cache: dict[int, Product] = {}
+    stats: dict[date, dict[str, float | int | None]] = {}
+
+    def ensure_bucket(entry_day: date) -> dict[str, float | int | None]:
+        return stats.setdefault(
+            entry_day,
+            {
+                "count": 0,
+                "kcal": 0.0,
+                "protein_g": 0.0,
+                "protein_goal_g": None,
+                "weight_kg": None,
+            },
+        )
+
+    product_ids = {intake.product_id for intake in intakes}
+    products: dict[int, Product] = {}
+    if product_ids:
+        rows = session.exec(select(Product).where(Product.id.in_(product_ids))).all()
+        products = {row.id: row for row in rows}
 
     for intake in intakes:
         day = _to_utc(intake.created_at).date()
-        bucket = stats.setdefault(day, {"count": 0, "kcal": 0.0})
+        bucket = ensure_bucket(day)
         bucket["count"] += 1
 
-        product = product_cache.get(intake.product_id)
-        if not product:
-            product = session.get(Product, intake.product_id)
-            if product:
-                product_cache[intake.product_id] = product
+        product = products.get(intake.product_id)
 
         if product and intake.quantity_g is not None:
             nutrients = nutrients_for_quantity(product, intake.quantity_g)
             bucket["kcal"] = round(bucket["kcal"] + nutrients["kcal"], 2)
+            bucket["protein_g"] = round(float(bucket["protein_g"]) + nutrients["protein_g"], 2)
+
+    goals = session.exec(
+        select(DailyGoal)
+        .where(DailyGoal.user_id == current_user.id)
+        .where(DailyGoal.date >= start_date)
+        .where(DailyGoal.date < end_date)
+    ).all()
+    for goal in goals:
+        bucket = ensure_bucket(goal.date)
+        bucket["protein_goal_g"] = float(goal.protein_goal)
+
+    weights = session.exec(
+        select(BodyWeightLog)
+        .where(BodyWeightLog.user_id == current_user.id)
+        .where(BodyWeightLog.created_at >= start_dt)
+        .where(BodyWeightLog.created_at < end_dt)
+        .order_by(desc(BodyWeightLog.created_at))
+    ).all()
+    for entry in weights:
+        day = _to_utc(entry.created_at).date()
+        bucket = ensure_bucket(day)
+        if bucket["weight_kg"] is None:
+            bucket["weight_kg"] = float(entry.weight_kg)
 
     days = [
-        CalendarDayEntry(date=entry_day, intake_count=int(values["count"]), kcal=float(values["kcal"]))
+        CalendarDayEntry(
+            date=entry_day,
+            intake_count=int(values["count"]),
+            kcal=float(values["kcal"]),
+            protein_g=float(values["protein_g"]),
+            protein_goal_g=float(values["protein_goal_g"]) if values["protein_goal_g"] is not None else None,
+            weight_kg=float(values["weight_kg"]) if values["weight_kg"] is not None else None,
+        )
         for entry_day, values in sorted(stats.items(), key=lambda item: item[0])
     ]
 

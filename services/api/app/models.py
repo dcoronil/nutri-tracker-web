@@ -49,7 +49,10 @@ class UserAccount(SQLModel, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     email: str = Field(unique=True, index=True, max_length=255)
+    username: str = Field(unique=True, index=True, min_length=3, max_length=32)
     password_hash: str = Field(max_length=255)
+    sex: Sex = Field(default=Sex.other)
+    birth_date: date_type | None = None
     email_verified: bool = Field(default=False)
     onboarding_completed: bool = Field(default=False)
     ai_provider: str | None = Field(default=None, max_length=32)
@@ -69,6 +72,21 @@ class EmailOTP(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utcnow)
 
 
+class PendingRegistration(SQLModel, table=True):
+    __tablename__ = "pending_registration"
+
+    id: int | None = Field(default=None, primary_key=True)
+    email: str = Field(unique=True, index=True, max_length=255)
+    username: str = Field(unique=True, index=True, min_length=3, max_length=32)
+    password_hash: str = Field(max_length=255)
+    sex: Sex = Field(default=Sex.other)
+    birth_date: date_type | None = None
+    code_hash: str = Field(max_length=255)
+    expires_at: datetime
+    attempts: int = Field(default=0)
+    created_at: datetime = Field(default_factory=utcnow)
+
+
 class UserProfile(SQLModel, table=True):
     __tablename__ = "user_profile"
 
@@ -79,6 +97,7 @@ class UserProfile(SQLModel, table=True):
     sex: Sex = Field(default=Sex.other)
     activity_level: ActivityLevel = Field(default=ActivityLevel.moderate)
     goal_type: GoalType = Field(default=GoalType.maintain)
+    weekly_weight_goal_kg: float | None = Field(default=None, gt=0, le=2)
 
     waist_cm: float | None = Field(default=None, gt=0)
     neck_cm: float | None = Field(default=None, gt=0)
@@ -117,6 +136,9 @@ class Product(SQLModel, table=True):
     source: str = Field(default="manual", max_length=64)
     is_verified: bool = Field(default=False)
     verified_at: datetime | None = None
+    status: str = Field(default="approved", max_length=32)
+    is_hidden: bool = Field(default=False)
+    canonical_product_id: int | None = Field(default=None, foreign_key="product.id", index=True)
     data_confidence: str = Field(default="manual", max_length=64)
     created_at: datetime = Field(default_factory=utcnow)
 
@@ -147,6 +169,16 @@ class Intake(SQLModel, table=True):
     estimate_confidence: str | None = Field(default=None, max_length=16)
     user_description: str | None = Field(default=None, max_length=1024)
     source_method: str = Field(default="barcode", max_length=32)
+    created_at: datetime = Field(default_factory=utcnow, index=True)
+
+
+class MealPhotoAnalysis(SQLModel, table=True):
+    __tablename__ = "meal_photo_analysis"
+
+    id: str = Field(primary_key=True, max_length=64)
+    user_id: int = Field(foreign_key="user_account.id", index=True)
+    image_meta_json: str = Field(max_length=8192)
+    expires_at: datetime = Field(index=True)
     created_at: datetime = Field(default_factory=utcnow, index=True)
 
 
@@ -183,4 +215,34 @@ class BodyMeasurementLog(SQLModel, table=True):
     chest_cm: float | None = Field(default=None, gt=0)
     arm_cm: float | None = Field(default=None, gt=0)
     thigh_cm: float | None = Field(default=None, gt=0)
+    created_at: datetime = Field(default_factory=utcnow, index=True)
+
+
+class WaterIntakeLog(SQLModel, table=True):
+    __tablename__ = "water_intake_log"
+
+    id: int | None = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="user_account.id", index=True)
+    ml: int = Field(gt=0, le=5000)
+    created_at: datetime = Field(default_factory=utcnow, index=True)
+
+
+class UserFavoriteProduct(SQLModel, table=True):
+    __tablename__ = "user_favorite_product"
+    __table_args__ = (UniqueConstraint("user_id", "product_id", name="uq_user_favorite_product"),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="user_account.id", index=True)
+    product_id: int = Field(foreign_key="product.id", index=True)
+    created_at: datetime = Field(default_factory=utcnow, index=True)
+
+
+class BodyProgressPhoto(SQLModel, table=True):
+    __tablename__ = "body_progress_photo"
+
+    id: int | None = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="user_account.id", index=True)
+    image_url: str = Field(max_length=1024)
+    note: str | None = Field(default=None, max_length=280)
+    is_private: bool = Field(default=True)
     created_at: datetime = Field(default_factory=utcnow, index=True)

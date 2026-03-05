@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     smtp_password: str | None = None
     smtp_from_email: str = "no-reply@nutri-tracker.local"
     smtp_use_tls: bool = True
+    smtp_use_ssl: bool = False
     expose_verification_code: bool = True
     dev_email_mode: bool = True
     ai_key_encryption_secret: str = "change-me-ai-key-secret"
@@ -29,6 +30,8 @@ class Settings(BaseSettings):
     openai_vision_timeout_seconds: float = 35.0
     ai_provider_default: str = "openai"
     ai_key_test_timeout_seconds: float = 8.0
+    meal_analysis_ttl_minutes: int = 30
+    meal_analysis_storage_dir: str = "/tmp/nutri-tracker/meal-analysis"
 
 
 @lru_cache

@@ -11,22 +11,35 @@ from app.models import ActivityLevel, GoalType, IntakeMethod, NutritionBasis, Se
 class AuthUser(BaseModel):
     id: int
     email: str
+    username: str
+    sex: Sex
+    birth_date: date | None = None
     email_verified: bool
     onboarding_completed: bool
 
 
 class RegisterRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=32)
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
+    sex: Sex
+    birth_date: date
 
 
 class RegisterResponse(BaseModel):
     user_id: int
     email: str
+    username: str
     email_verified: bool
     onboarding_completed: bool
     message: str
     debug_verification_code: str | None = None
+
+
+class UsernameAvailabilityResponse(BaseModel):
+    username: str
+    available: bool
+    reason: str | None = None
 
 
 class VerifyRequest(BaseModel):
@@ -380,6 +393,8 @@ class MealEstimateQuestionsResponse(BaseModel):
     question_items: list[MealEstimateQuestion] = Field(default_factory=list)
     assumptions: list[str] = Field(default_factory=list)
     detected_ingredients: list[str] = Field(default_factory=list)
+    analysis_id: str | None = None
+    analysis_expires_at: datetime | None = None
 
 
 class MealPhotoEstimateResponse(BaseModel):
@@ -399,6 +414,9 @@ class CalendarDayEntry(BaseModel):
     date: date
     intake_count: int
     kcal: float
+    protein_g: float = 0
+    protein_goal_g: float | None = None
+    weight_kg: float | None = None
 
 
 class CalendarMonthResponse(BaseModel):
