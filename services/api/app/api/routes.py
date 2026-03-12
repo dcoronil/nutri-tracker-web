@@ -74,11 +74,11 @@ from app.schemas import (
     DaySummary,
     FavoriteProductRead,
     FavoriteProductToggleResponse,
-    FriendshipOverviewResponse,
     FoodSearchItem,
     FoodSearchResponse,
     FriendRequestCreate,
     FriendRequestRead,
+    FriendshipOverviewResponse,
     GoalFeedback,
     IntakeCreate,
     IntakeDeleteResponse,
@@ -125,9 +125,9 @@ from app.schemas import (
     UserAIKeyTestRequest,
     UserAIKeyTestResponse,
     UserAIKeyUpsertRequest,
+    UsernameAvailabilityResponse,
     UserRecipeRead,
     UserRecipeUpsert,
-    UsernameAvailabilityResponse,
     VerifyRequest,
     WaterLogCreate,
     WaterLogRead,
@@ -153,7 +153,6 @@ from app.services.auth import (
     verify_otp_code,
     verify_password,
 )
-from app.services.generic_foods import GENERIC_FOODS, GenericFoodEntry
 from app.services.body_metrics import (
     bmi,
     bmi_category,
@@ -168,6 +167,11 @@ from app.services.body_metrics import (
     weekly_weight_change,
 )
 from app.services.email import EmailSendError, send_verification_email
+from app.services.generic_foods import GENERIC_FOODS, GenericFoodEntry
+from app.services.graph_recommendations import (
+    GraphRecommendationSignal,
+    recommend_recipe_options_with_graph,
+)
 from app.services.nutrition import (
     IntakeComputationError,
     coherence_questions,
@@ -189,6 +193,7 @@ from app.services.openfoodfacts import (
 from app.services.openfoodfacts import (
     missing_critical_fields as off_missing_critical_fields,
 )
+from app.services.rate_limit import client_key_from_ip, rate_limiter
 from app.services.recipe_ai import (
     RecipeAIError,
     generate_recipe_options_with_ai,
@@ -196,7 +201,6 @@ from app.services.recipe_ai import (
     get_recipe_generation_option,
     store_recipe_generation,
 )
-from app.services.rate_limit import client_key_from_ip, rate_limiter
 from app.services.vision_ai import (
     VisionAIError,
     estimate_meal_with_ai,
@@ -2629,7 +2633,7 @@ def _recommend_recipe_options(
         meal_min_kcal = max(meal_min_kcal * 0.8, meal_target_kcal * 0.55)
         meal_max_kcal = min(meal_max_kcal * 1.25, meal_target_kcal * 1.4 if meal_target_kcal > 0 else meal_max_kcal)
 
-    scored_options: list[tuple[float, str, dict[str, object]]] = []
+    scored_options: list[tuple[str, float, str, dict[str, object]]] = []
 
     for option in generated_options:
         recipe = option.get("recipe")
@@ -2704,14 +2708,27 @@ def _recommend_recipe_options(
                 reasons.append((gain_bonus, "Aprovecha mejor una fase de subida sin quedarse corto"))
 
         recommended_reason = max(reasons, key=lambda item: item[0])[1] if reasons else "Es la opción más equilibrada para ahora"
-        scored_options.append((score, recommended_reason, option))
+        scored_options.append((str(option.get("option_id")), score, recommended_reason, option))
 
     if not scored_options:
         return generated_options
 
-    scored_options.sort(key=lambda item: item[0], reverse=True)
-    recommended_option_id = str(scored_options[0][2].get("option_id"))
-    reason_by_option_id = {str(option.get("option_id")): reason for _, reason, option in scored_options}
+    graph_signals = recommend_recipe_options_with_graph(
+        session=session,
+        current_user=current_user,
+        generated_options=generated_options,
+    )
+
+    final_rank: list[tuple[str, float, str, dict[str, object]]] = []
+    for option_id, heuristic_score, heuristic_reason, option in scored_options:
+        graph_signal: GraphRecommendationSignal | None = graph_signals.get(option_id)
+        final_score = heuristic_score + (graph_signal.score if graph_signal else 0.0)
+        final_reason = graph_signal.reason if graph_signal and graph_signal.score >= 12.0 else heuristic_reason
+        final_rank.append((option_id, final_score, final_reason, option))
+
+    final_rank.sort(key=lambda item: item[1], reverse=True)
+    recommended_option_id = final_rank[0][0]
+    reason_by_option_id = {option_id: reason for option_id, _, reason, _ in final_rank}
 
     enriched_options: list[dict[str, object]] = []
     for option in generated_options:

@@ -124,3 +124,11 @@ Mobile (tipado):
 cd apps/mobile
 npx tsc --noEmit
 ```
+
+## Neo4j
+
+Para recomendaciones por perfiles similares en recetas AI:
+
+- configura `NEO4J_ENABLED=true`
+- ajusta `NEO4J_URI`, `NEO4J_USERNAME`, `NEO4J_PASSWORD`, `NEO4J_DATABASE`
+- `POST /recipes/ai/options` mantiene la heuristica actual y la reordena con Neo4j si la conexion esta disponible

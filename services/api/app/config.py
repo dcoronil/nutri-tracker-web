@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     meal_analysis_ttl_minutes: int = 30
     meal_analysis_storage_dir: str = "/tmp/nutri-tracker/meal-analysis"
     social_media_storage_dir: str = "/tmp/nutri-tracker/social-media"
+    neo4j_enabled: bool = False
+    neo4j_uri: str | None = None
+    neo4j_username: str | None = None
+    neo4j_password: str | None = None
+    neo4j_database: str = "neo4j"
 
 
 @lru_cache

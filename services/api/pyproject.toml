@@ -25,7 +25,8 @@ dependencies = [
   "email-validator>=2.2.0",
   "cryptography>=43.0.0",
   "pillow>=10.4.0",
-  "pytesseract>=0.3.13"
+  "pytesseract>=0.3.13",
+  "neo4j>=5.28.1"
 ]
 
 [project.optional-dependencies]

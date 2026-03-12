@@ -335,3 +335,46 @@ def test_recipe_ai_options_recommendation_and_detail(client, auth_headers, monke
     assert detail["recipe"]["title"] == "Bowl proteico de pollo"
     assert detail["recommended"] is True
     assert detail["recommended_reason"]
+
+
+def test_recipe_ai_options_can_use_graph_similarity_signal(client, auth_headers, monkeypatch):
+    from app.services.graph_recommendations import GraphRecommendationSignal
+
+    _configure_ai_key(client, auth_headers)
+    monkeypatch.setattr("app.api.routes.generate_recipe_options_with_ai", _mock_generate_recipe_options_with_ai)
+    monkeypatch.setattr(
+        "app.api.routes.recommend_recipe_options_with_graph",
+        lambda **_: {
+            "option_2": GraphRecommendationSignal(
+                option_id="option_2",
+                score=30.0,
+                reason="Neo4j prioriza esta opcion por afinidad con perfiles similares.",
+            )
+        },
+    )
+
+    response = client.post(
+        "/recipes/ai/options",
+        json={
+            "meal_type": "lunch",
+            "target_kcal": 550,
+            "target_protein_g": 40,
+            "target_fat_g": 18,
+            "target_carbs_g": 50,
+            "goal_mode": "maintain",
+            "use_only_ingredients": True,
+            "available_ingredients": [
+                {"name": "Pollo", "quantity": 200, "unit": "g"},
+                {"name": "Arroz cocido", "quantity": 150, "unit": "g"},
+            ],
+            "allow_basic_pantry": True,
+            "locale": "es",
+        },
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    recommended = [item for item in response.json()["options"] if item["recommended"]]
+    assert len(recommended) == 1
+    assert recommended[0]["option_id"] == "option_2"
+    assert "Neo4j" in recommended[0]["recommended_reason"]
