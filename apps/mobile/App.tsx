@@ -638,6 +638,13 @@ type LoginInput = {
   password: string;
 };
 
+type GoogleAuthInput = {
+  credential: string;
+  username?: string;
+  sex?: Sex;
+  birth_date?: string;
+};
+
 type AuthContextValue = {
   loading: boolean;
   token: string | null;
@@ -649,6 +656,7 @@ type AuthContextValue = {
   register: (input: RegisterInput) => Promise<RegisterResponse>;
   checkUsernameAvailability: (username: string) => Promise<UsernameAvailability>;
   login: (input: LoginInput) => Promise<void>;
+  googleSignIn: (input: GoogleAuthInput) => Promise<void>;
   verifyEmail: (email: string, code: string) => Promise<void>;
   resendCode: (email: string) => Promise<void>;
   clearPendingVerification: () => void;
@@ -840,6 +848,32 @@ const DEV_SETTINGS_MODE = (process.env.EXPO_PUBLIC_DEV_SETTINGS ?? "false").toLo
 const STREAK_FLAME_SVG_XML =
   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 92.27 122.88"><g><path fill="#EC6F59" fill-rule="evenodd" clip-rule="evenodd" d="M18.61,54.89C15.7,28.8,30.94,10.45,59.52,0C42.02,22.71,74.44,47.31,76.23,70.89c4.19-7.15,6.57-16.69,7.04-29.45c21.43,33.62,3.66,88.57-43.5,80.67c-4.33-0.72-8.5-2.09-12.3-4.13C10.27,108.8,0,88.79,0,69.68C0,57.5,5.21,46.63,11.95,37.99C12.85,46.45,14.77,52.76,18.61,54.89L18.61,54.89z"/><path fill="#FAD15C" fill-rule="evenodd" clip-rule="evenodd" d="M33.87,92.58c-4.86-12.55-4.19-32.82,9.42-39.93c0.1,23.3,23.05,26.27,18.8,51.14c3.92-4.44,5.9-11.54,6.25-17.15c6.22,14.24,1.34,25.63-7.53,31.43c-26.97,17.64-50.19-18.12-34.75-37.72C26.53,84.73,31.89,91.49,33.87,92.58L33.87,92.58z"/></g></svg>';
 const theme = themeForPlatform(Platform.OS);
+const GOOGLE_WEB_CLIENT_ID = typeof process !== "undefined" ? process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID?.trim() ?? "" : "";
+
+type GoogleCredentialCallback = (response: { credential?: string }) => void;
+
+declare global {
+  interface Window {
+    google?: {
+      accounts: {
+        id: {
+          initialize: (options: { client_id: string; callback: GoogleCredentialCallback }) => void;
+          renderButton: (
+            parent: HTMLElement,
+            options: {
+              theme?: "outline" | "filled_black" | "filled_blue";
+              size?: "large" | "medium" | "small";
+              text?: "signin_with" | "signup_with" | "continue_with";
+              shape?: "pill" | "rectangular" | "circle" | "square";
+              width?: number;
+              logo_alignment?: "left" | "center";
+            },
+          ) => void;
+        };
+      };
+    };
+  }
+}
 
 const authContext = createContext<AuthContextValue | undefined>(undefined);
 
@@ -1248,6 +1282,34 @@ function parseBirthDateInput(value: string): Date | null {
     return null;
   }
   return result;
+}
+
+type BirthDateParts = {
+  day: string;
+  month: string;
+  year: string;
+};
+
+function birthDatePartsFromValue(value: string): BirthDateParts {
+  const parsed = parseBirthDateInput(value);
+  if (!parsed) {
+    return { day: "", month: "", year: "" };
+  }
+  return {
+    day: String(parsed.getUTCDate()).padStart(2, "0"),
+    month: String(parsed.getUTCMonth() + 1).padStart(2, "0"),
+    year: String(parsed.getUTCFullYear()),
+  };
+}
+
+function birthDateValueFromParts(parts: BirthDateParts): string {
+  const day = parts.day.padStart(2, "0");
+  const month = parts.month.padStart(2, "0");
+  const year = parts.year;
+  if (year.length !== 4 || !day.trim() || !month.trim()) {
+    return "";
+  }
+  return `${year}-${month}-${day}`;
 }
 
 function formatRelativeTime(iso: string): string {
@@ -1776,6 +1838,19 @@ function AuthProvider({ children }: { children: import("react").ReactNode }) {
   const login = useCallback(
     async (input: LoginInput): Promise<void> => {
       const response = await request<AuthResponse>("/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+      });
+      await persistAuth(response);
+      setOtpHint(null);
+    },
+    [persistAuth, request],
+  );
+
+  const googleSignIn = useCallback(
+    async (input: GoogleAuthInput): Promise<void> => {
+      const response = await request<AuthResponse>("/auth/google", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(input),
@@ -2735,6 +2810,7 @@ function AuthProvider({ children }: { children: import("react").ReactNode }) {
       register,
       checkUsernameAvailability,
       login,
+      googleSignIn,
       verifyEmail,
       resendCode,
       clearPendingVerification,
@@ -2841,6 +2917,7 @@ function AuthProvider({ children }: { children: import("react").ReactNode }) {
       fetchWeightLogs,
       loading,
       login,
+      googleSignIn,
       logout,
       lookupByBarcode,
       otpHint,
@@ -3200,6 +3277,104 @@ function SecondaryButton(props: { title: string; onPress: () => void; disabled?:
   );
 }
 
+function GoogleAuthButton(props: {
+  mode: "signup_with" | "continue_with";
+  disabled?: boolean;
+  helperText?: string;
+  onCredential: (credential: string) => void;
+}) {
+  const hostRef = useRef<View | null>(null);
+  const [ready, setReady] = useState<boolean>(() => Platform.OS === "web" && typeof window !== "undefined" && Boolean(window.google?.accounts?.id));
+  const [loadingScript, setLoadingScript] = useState(false);
+  const { disabled, helperText, mode, onCredential } = props;
+
+  useEffect(() => {
+    if (Platform.OS !== "web" || typeof window === "undefined" || typeof document === "undefined" || !GOOGLE_WEB_CLIENT_ID || window.google?.accounts?.id) {
+      return;
+    }
+    const existing = document.querySelector('script[data-google-identity="true"]') as HTMLScriptElement | null;
+    const handleReady = () => {
+      setReady(true);
+      setLoadingScript(false);
+    };
+
+    if (existing) {
+      if (window.google?.accounts?.id) {
+        handleReady();
+        return;
+      }
+      setLoadingScript(true);
+      existing.addEventListener("load", handleReady, { once: true });
+      existing.addEventListener("error", () => setLoadingScript(false), { once: true });
+      return () => {
+        existing.removeEventListener("load", handleReady);
+      };
+    }
+
+    setLoadingScript(true);
+    const script = document.createElement("script");
+    script.src = "https://accounts.google.com/gsi/client";
+    script.async = true;
+    script.defer = true;
+    script.dataset.googleIdentity = "true";
+    script.onload = handleReady;
+    script.onerror = () => setLoadingScript(false);
+    document.head.appendChild(script);
+    return () => {
+      script.onload = null;
+      script.onerror = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (
+      Platform.OS !== "web" ||
+      typeof window === "undefined" ||
+      !ready ||
+      !GOOGLE_WEB_CLIENT_ID ||
+      !hostRef.current ||
+      !window.google?.accounts?.id
+    ) {
+      return;
+    }
+    const host = hostRef.current as unknown as HTMLElement | null;
+    if (!host) {
+      return;
+    }
+    host.innerHTML = "";
+    window.google.accounts.id.initialize({
+      client_id: GOOGLE_WEB_CLIENT_ID,
+      callback: (response) => {
+        const credential = response.credential?.trim();
+        if (credential) {
+          onCredential(credential);
+        }
+      },
+    });
+    window.google.accounts.id.renderButton(host, {
+      theme: "outline",
+      size: "large",
+      text: mode,
+      shape: "pill",
+      logo_alignment: "left",
+      width: 320,
+    });
+  }, [mode, onCredential, ready]);
+
+  if (Platform.OS !== "web" || !GOOGLE_WEB_CLIENT_ID) {
+    return null;
+  }
+
+  return (
+    <View style={[styles.googleAuthCard, disabled && styles.googleAuthCardDisabled]}>
+      <Text style={styles.googleAuthTitle}>Google</Text>
+      <Text style={styles.googleAuthSubtitle}>{helperText ?? "Usa tu cuenta de Google sin escribir contraseña."}</Text>
+      <View pointerEvents={disabled ? "none" : "auto"} ref={hostRef as never} style={styles.googleAuthButtonHost} />
+      {loadingScript && !ready ? <Text style={styles.fieldHelperText}>Cargando acceso con Google...</Text> : null}
+    </View>
+  );
+}
+
 function AppCard(props: { children: import("react").ReactNode; style?: object }) {
   const { width } = useWindowDimensions();
   const breakpoint = webBreakpoint(width);
@@ -3467,6 +3642,7 @@ function SignupScreen({ onBack }: { onBack: () => void }) {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [birthDate, setBirthDate] = useState<Date>(new Date(2000, 0, 1));
   const [birthDateInput, setBirthDateInput] = useState("2000-01-01");
+  const [birthDateParts, setBirthDateParts] = useState<BirthDateParts>(() => birthDatePartsFromValue("2000-01-01"));
   const [sex, setSex] = useState<Sex>("other");
   const [showBirthDatePicker, setShowBirthDatePicker] = useState(false);
   const [usernameStatus, setUsernameStatus] = useState<{
@@ -3481,9 +3657,11 @@ function SignupScreen({ onBack }: { onBack: () => void }) {
   const [loading, setLoading] = useState(false);
   const birthDateValue = formatDateForApi(birthDate);
   const strength = useMemo(() => passwordStrengthMeta(password), [password]);
+  const birthDateAge = useMemo(() => ageFromBirthDateString(birthDateInput), [birthDateInput]);
 
   useEffect(() => {
     setBirthDateInput(birthDateValue);
+    setBirthDateParts(birthDatePartsFromValue(birthDateValue));
   }, [birthDateValue]);
 
   useEffect(() => {
@@ -3559,6 +3737,45 @@ function SignupScreen({ onBack }: { onBack: () => void }) {
     }
   };
 
+  const updateBirthDatePart = useCallback((part: keyof BirthDateParts, rawValue: string) => {
+    const sanitized = rawValue.replace(/\D/g, "").slice(0, part === "year" ? 4 : 2);
+    setBirthDateParts((current) => {
+      const next = { ...current, [part]: sanitized };
+      const nextValue = birthDateValueFromParts(next);
+      setBirthDateInput(nextValue || [next.year, next.month, next.day].filter(Boolean).join("-"));
+      const parsed = parseBirthDateInput(nextValue);
+      if (parsed) {
+        setBirthDate(new Date(parsed.getUTCFullYear(), parsed.getUTCMonth(), parsed.getUTCDate()));
+      }
+      return next;
+    });
+  }, []);
+
+  const buildEffectiveBirthDate = useCallback(() => {
+    if (!isWeb) {
+      return birthDateValue;
+    }
+    const candidate = birthDateValueFromParts(birthDateParts);
+    return candidate || birthDateInput.trim();
+  }, [birthDateInput, birthDateParts, birthDateValue, isWeb]);
+
+  const normalizeGoogleUsername = useCallback(() => {
+    const normalizedUsername = username.trim().toLowerCase();
+    if (!normalizedUsername) {
+      return "";
+    }
+    if (!/^[a-z0-9._]{3,32}$/.test(normalizedUsername)) {
+      throw new Error("Usa 3-32 caracteres: letras minúsculas, números, punto o guion bajo.");
+    }
+    if (usernameStatus.state === "checking") {
+      throw new Error("Comprobando disponibilidad del nombre de usuario.");
+    }
+    if (usernameStatus.state === "invalid" || usernameStatus.state === "unavailable") {
+      throw new Error(usernameStatus.message || "Ese nombre de usuario no está disponible.");
+    }
+    return normalizedUsername;
+  }, [username, usernameStatus.message, usernameStatus.state]);
+
   const submit = async () => {
     const normalizedUsername = username.trim().toLowerCase();
     if (!normalizedUsername || !email.trim() || !password.trim()) {
@@ -3585,7 +3802,7 @@ function SignupScreen({ onBack }: { onBack: () => void }) {
       showAlert("Usuario", usernameStatus.message || "Ese nombre de usuario no está disponible.");
       return;
     }
-    const effectiveBirthDate = (isWeb ? birthDateInput.trim() : birthDateValue) || birthDateValue;
+    const effectiveBirthDate = buildEffectiveBirthDate() || birthDateValue;
     const parsedBirthDate = parseBirthDateInput(effectiveBirthDate);
     if (!parsedBirthDate) {
       showAlert("Fecha de nacimiento", "Usa formato YYYY-MM-DD.");
@@ -3615,6 +3832,42 @@ function SignupScreen({ onBack }: { onBack: () => void }) {
       } else {
         showAlert("Registro", message);
       }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const submitWithGoogle = async (credential: string) => {
+    const effectiveBirthDate = buildEffectiveBirthDate() || birthDateValue;
+    const parsedBirthDate = parseBirthDateInput(effectiveBirthDate);
+    if (!parsedBirthDate) {
+      showAlert("Fecha de nacimiento", "Completa una fecha válida antes de usar Google.");
+      return;
+    }
+    const age = ageFromBirthDateString(effectiveBirthDate);
+    if (age === null || age < 13) {
+      showAlert("Fecha de nacimiento", "Debes tener al menos 13 años.");
+      return;
+    }
+
+    let preferredUsername = "";
+    try {
+      preferredUsername = normalizeGoogleUsername();
+    } catch (error) {
+      showAlert("Usuario", error instanceof Error ? error.message : "Revisa el nombre de usuario.");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      await auth.googleSignIn({
+        credential,
+        username: preferredUsername || undefined,
+        sex,
+        birth_date: effectiveBirthDate,
+      });
+    } catch (error) {
+      showAlert("Google", parseApiError(error));
     } finally {
       setLoading(false);
     }
@@ -3677,25 +3930,58 @@ function SignupScreen({ onBack }: { onBack: () => void }) {
             ]}
           />
           {isWeb ? (
-            <View style={styles.fieldWrap}>
-              <Text style={styles.fieldLabel}>Fecha de nacimiento</Text>
-              <View style={styles.webDateFieldWrap}>
-                <RNTextInput
-                  value={birthDateInput}
-                  onChangeText={(value) => {
-                    setBirthDateInput(value);
-                    const parsed = parseBirthDateInput(value);
-                    if (parsed) {
-                      setBirthDate(new Date(parsed.getUTCFullYear(), parsed.getUTCMonth(), parsed.getUTCDate()));
-                    }
-                  }}
-                  placeholder="YYYY-MM-DD"
-                  placeholderTextColor={theme.placeholder}
-                  style={styles.webDateNativeInput}
-                  autoCapitalize="none"
-                  {...({ type: "date", max: formatDateForApi(new Date()) } as unknown as TextInputProps)}
-                />
+            <View style={styles.birthDateCard}>
+              <View style={styles.birthDateCardHeader}>
+                <View>
+                  <Text style={styles.birthDateCardTitle}>Fecha de nacimiento</Text>
+                  <Text style={styles.birthDateCardSubtitle}>La usamos para calcular edad, perfil y objetivos realistas.</Text>
+                </View>
+                {birthDateAge !== null ? (
+                  <View style={styles.birthDateAgePill}>
+                    <Text style={styles.birthDateAgeValue}>{birthDateAge}</Text>
+                    <Text style={styles.birthDateAgeLabel}>años</Text>
+                  </View>
+                ) : null}
               </View>
+              <View style={styles.birthDateSegmentRow}>
+                <View style={[styles.birthDateSegmentCard, styles.birthDateSegmentCardSmall]}>
+                  <Text style={styles.birthDateSegmentLabel}>Día</Text>
+                  <RNTextInput
+                    value={birthDateParts.day}
+                    onChangeText={(value) => updateBirthDatePart("day", value)}
+                    placeholder="DD"
+                    placeholderTextColor={theme.placeholder}
+                    keyboardType="numeric"
+                    inputMode="numeric"
+                    style={styles.birthDateSegmentInput}
+                  />
+                </View>
+                <View style={[styles.birthDateSegmentCard, styles.birthDateSegmentCardSmall]}>
+                  <Text style={styles.birthDateSegmentLabel}>Mes</Text>
+                  <RNTextInput
+                    value={birthDateParts.month}
+                    onChangeText={(value) => updateBirthDatePart("month", value)}
+                    placeholder="MM"
+                    placeholderTextColor={theme.placeholder}
+                    keyboardType="numeric"
+                    inputMode="numeric"
+                    style={styles.birthDateSegmentInput}
+                  />
+                </View>
+                <View style={[styles.birthDateSegmentCard, styles.birthDateSegmentCardLarge]}>
+                  <Text style={styles.birthDateSegmentLabel}>Año</Text>
+                  <RNTextInput
+                    value={birthDateParts.year}
+                    onChangeText={(value) => updateBirthDatePart("year", value)}
+                    placeholder="YYYY"
+                    placeholderTextColor={theme.placeholder}
+                    keyboardType="numeric"
+                    inputMode="numeric"
+                    style={styles.birthDateSegmentInput}
+                  />
+                </View>
+              </View>
+              <Text style={styles.fieldHelperText}>Formato real: {buildEffectiveBirthDate() || "YYYY-MM-DD"}</Text>
             </View>
           ) : (
             <>
@@ -3721,6 +4007,14 @@ function SignupScreen({ onBack }: { onBack: () => void }) {
           )}
 
           <PrimaryButton title="Crear cuenta" onPress={submit} loading={loading} disabled={isSubmitDisabled} />
+          <GoogleAuthButton
+            mode="signup_with"
+            disabled={loading}
+            helperText="Crea la cuenta con Google y conserva los datos de perfil que acabas de indicar."
+            onCredential={(credential) => {
+              void submitWithGoogle(credential);
+            }}
+          />
           <SecondaryButton title="Volver" onPress={onBack} />
         </ScrollView>
       </KeyboardAvoidingView>
@@ -3755,6 +4049,17 @@ function LoginScreen({ onBack }: { onBack: () => void }) {
     }
   };
 
+  const submitWithGoogle = async (credential: string) => {
+    setLoading(true);
+    try {
+      await auth.googleSignIn({ credential });
+    } catch (error) {
+      showAlert("Google", parseApiError(error));
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <SafeAreaView style={styles.screen}>
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.flex1}>
@@ -3765,6 +4070,14 @@ function LoginScreen({ onBack }: { onBack: () => void }) {
           <InputField label="Contraseña" value={password} onChangeText={setPassword} secureTextEntry />
 
           <PrimaryButton title="Entrar" onPress={submit} loading={loading} />
+          <GoogleAuthButton
+            mode="continue_with"
+            disabled={loading}
+            helperText="Entra con la misma cuenta de Google con la que creaste el perfil."
+            onCredential={(credential) => {
+              void submitWithGoogle(credential);
+            }}
+          />
           <SecondaryButton title="Volver" onPress={onBack} />
         </ScrollView>
       </KeyboardAvoidingView>
@@ -4382,7 +4695,7 @@ function DashboardScreen({
   const useDesktopLayout = isDesktopWebLayout(width);
   const useWideDesktopLayout = isWideDesktopWebLayout(width);
   const webMainScrollStyle = useMemo(() => webMainContentContainerStyle(width), [width]);
-  const selectedDate = useMemo(() => formatDateLocal(new Date()), []);
+  const selectedDate = formatDateLocal(new Date());
   const [macroViewMode, setMacroViewMode] = useState<"rings" | "bars">("rings");
   const [summary, setSummary] = useState<DaySummary | null>(null);
   const [loadingSummary, setLoadingSummary] = useState(true);
@@ -7758,14 +8071,14 @@ function SocialScreen() {
   );
 }
 
-function SettingsScreen() {
+function SettingsScreen({ isActive }: { isActive: boolean }) {
   const { width } = useWindowDimensions();
   const auth = useAuth();
   const useDesktopLayout = isDesktopWebLayout(width);
   const useWideDesktopLayout = isWideDesktopWebLayout(width);
   const webMainScrollStyle = useMemo(() => webMainContentContainerStyle(width), [width]);
   const { language, setLanguage } = useI18n();
-  const today = useMemo(() => formatDateLocal(new Date()), []);
+  const today = formatDateLocal(new Date());
   const [apiDraft, setApiDraft] = useState(auth.apiBaseUrl);
   const [checking, setChecking] = useState(false);
   const [savingGoals, setSavingGoals] = useState(false);
@@ -7823,18 +8136,30 @@ function SettingsScreen() {
   const loadMeta = useCallback(async () => {
     setLoadingMeta(true);
     try {
-      const [goalResponse, analysis, bodySummary, aiStatus] = await Promise.all([
+      const [goalResult, analysisResult, bodySummaryResult, aiStatusResult] = await Promise.allSettled([
         auth.fetchGoal(today),
         auth.fetchAnalysis(today),
         auth.fetchBodySummary(),
         auth.fetchUserAIKeyStatus(),
       ]);
 
-      setRecommendedGoal(analysis.recommended_goal);
-      setSuggestedKcalAdjustment(analysis.suggested_kcal_adjustment);
-      setBodyHints(bodySummary.hints);
-      setAiKeyStatus(aiStatus);
+      const analysis = analysisResult.status === "fulfilled" ? analysisResult.value : null;
+      if (analysis) {
+        setRecommendedGoal(analysis.recommended_goal);
+        setSuggestedKcalAdjustment(analysis.suggested_kcal_adjustment);
+      }
 
+      const bodySummary = bodySummaryResult.status === "fulfilled" ? bodySummaryResult.value : null;
+      if (bodySummary) {
+        setBodyHints(bodySummary.hints);
+      }
+
+      const aiStatus = aiStatusResult.status === "fulfilled" ? aiStatusResult.value : null;
+      if (aiStatus) {
+        setAiKeyStatus(aiStatus);
+      }
+
+      const goalResponse = goalResult.status === "fulfilled" ? goalResult.value : null;
       if (goalResponse) {
         setGoalDraft({
           kcal_goal: String(goalResponse.kcal_goal),
@@ -7842,7 +8167,7 @@ function SettingsScreen() {
           fat_goal: String(goalResponse.fat_goal),
           carbs_goal: String(goalResponse.carbs_goal),
         });
-      } else {
+      } else if (analysis) {
         setGoalDraft({
           kcal_goal: String(analysis.recommended_goal.kcal_goal),
           protein_goal: String(analysis.recommended_goal.protein_goal),
@@ -7850,16 +8175,23 @@ function SettingsScreen() {
           carbs_goal: String(analysis.recommended_goal.carbs_goal),
         });
       }
+
+      if (goalResult.status === "rejected" && analysisResult.status === "rejected") {
+        showAlert("Objetivos", parseApiError(goalResult.reason));
+      }
     } catch (error) {
-      showAlert("Settings", parseApiError(error));
+      showAlert("Ajustes", parseApiError(error));
     } finally {
       setLoadingMeta(false);
     }
   }, [auth.fetchAnalysis, auth.fetchBodySummary, auth.fetchGoal, auth.fetchUserAIKeyStatus, today]);
 
   useEffect(() => {
+    if (!isActive) {
+      return;
+    }
     void loadMeta();
-  }, [loadMeta]);
+  }, [isActive, loadMeta]);
 
   const toggleSection = (section: keyof typeof openSections) => {
     setOpenSections((current) => ({ ...current, [section]: !current[section] }));
@@ -13295,7 +13627,7 @@ function MainAppTabs() {
             },
           ]}
         >
-          {visitedTabs.settings ? <SettingsScreen /> : null}
+          {visitedTabs.settings ? <SettingsScreen isActive={tab === "settings"} /> : null}
         </Animated.View>
       </View>
 
@@ -13792,6 +14124,113 @@ const styles = StyleSheet.create({
     padding: 8,
     backgroundColor: theme.inputBg,
     gap: 8,
+  },
+  birthDateCard: {
+    borderWidth: 1,
+    borderColor: theme.border,
+    borderRadius: 22,
+    padding: 18,
+    backgroundColor: theme.panel,
+    gap: 14,
+  },
+  birthDateCardHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 12,
+  },
+  birthDateCardTitle: {
+    color: theme.text,
+    fontSize: 15,
+    fontWeight: "700",
+  },
+  birthDateCardSubtitle: {
+    color: theme.muted,
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 4,
+    maxWidth: 360,
+  },
+  birthDateAgePill: {
+    borderWidth: 1,
+    borderColor: "rgba(45,212,191,0.28)",
+    backgroundColor: "rgba(45,212,191,0.12)",
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    alignItems: "center",
+    minWidth: 62,
+  },
+  birthDateAgeValue: {
+    color: theme.accent,
+    fontSize: 16,
+    fontWeight: "800",
+  },
+  birthDateAgeLabel: {
+    color: theme.muted,
+    fontSize: 11,
+    fontWeight: "600",
+  },
+  birthDateSegmentRow: {
+    flexDirection: "row",
+    gap: 12,
+    flexWrap: "wrap",
+  },
+  birthDateSegmentCard: {
+    borderWidth: 1,
+    borderColor: theme.inputBorder,
+    borderRadius: 18,
+    backgroundColor: theme.inputBg,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 6,
+  },
+  birthDateSegmentCardSmall: {
+    minWidth: 92,
+    flexGrow: 1,
+  },
+  birthDateSegmentCardLarge: {
+    minWidth: 122,
+    flexGrow: 1.3,
+  },
+  birthDateSegmentLabel: {
+    color: theme.muted,
+    fontSize: 11,
+    fontWeight: "700",
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+  },
+  birthDateSegmentInput: {
+    color: theme.text,
+    fontSize: 24,
+    fontWeight: "700",
+    paddingVertical: 2,
+  },
+  googleAuthCard: {
+    borderWidth: 1,
+    borderColor: theme.border,
+    borderRadius: 20,
+    backgroundColor: theme.panel,
+    padding: 18,
+    gap: 10,
+  },
+  googleAuthCardDisabled: {
+    opacity: 0.65,
+  },
+  googleAuthTitle: {
+    color: theme.text,
+    fontSize: 15,
+    fontWeight: "700",
+  },
+  googleAuthSubtitle: {
+    color: theme.muted,
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  googleAuthButtonHost: {
+    minHeight: 42,
+    alignItems: "center",
+    justifyContent: "center",
   },
   passwordStrengthWrap: {
     gap: 8,

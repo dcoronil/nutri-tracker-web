@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     auth_secret_key: str = "change-me-in-production"
     auth_token_ttl_hours: int = 720
     verification_code_ttl_minutes: int = 15
+    google_web_client_id: str | None = None
+    google_tokeninfo_url: str = "https://oauth2.googleapis.com/tokeninfo"
+    google_auth_timeout_seconds: float = 5.0
 
     smtp_host: str | None = None
     smtp_port: int = 587

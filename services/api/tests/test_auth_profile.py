@@ -117,3 +117,119 @@ def test_username_availability_endpoint_accepts_free_username(client):
     payload = availability.json()
     assert payload["username"] == candidate
     assert payload["available"] is True
+
+
+def test_latest_daily_goal_carries_forward_to_future_days(client):
+    email = f"carry-goal-{uuid4().hex[:8]}@example.com"
+    register_response = client.post(
+        "/auth/register",
+        json={
+            "username": f"carrygoal_{uuid4().hex[:8]}",
+            "email": email,
+            "password": "supersecret123",
+            "sex": "male",
+            "birth_date": "1994-05-09",
+        },
+    )
+    assert register_response.status_code == 200
+    verify_response = client.post(
+        "/auth/verify",
+        json={"email": email, "code": register_response.json()["debug_verification_code"]},
+    )
+    assert verify_response.status_code == 200
+    headers = {"Authorization": f"Bearer {verify_response.json()['access_token']}"}
+
+    profile_response = client.post(
+        "/profile",
+        headers=headers,
+        json={
+            "weight_kg": 82,
+            "height_cm": 180,
+            "age": 31,
+            "sex": "male",
+            "activity_level": "moderate",
+            "goal_type": "lose",
+            "waist_cm": 90,
+            "neck_cm": 39,
+        },
+    )
+    assert profile_response.status_code == 200
+
+    yesterday = date.today().fromordinal(date.today().toordinal() - 1).isoformat()
+    today = date.today().isoformat()
+
+    goal_response = client.post(
+        f"/goals/{yesterday}",
+        headers=headers,
+        json={
+            "kcal_goal": 2100,
+            "protein_goal": 150,
+            "fat_goal": 68,
+            "carbs_goal": 220,
+        },
+    )
+    assert goal_response.status_code == 200
+
+    get_goal_today = client.get(f"/goals/{today}", headers=headers)
+    assert get_goal_today.status_code == 200
+    assert get_goal_today.json()["kcal_goal"] == 2100
+
+    day_summary_today = client.get(f"/days/{today}/summary", headers=headers)
+    assert day_summary_today.status_code == 200
+    assert day_summary_today.json()["goal"]["kcal_goal"] == 2100
+
+
+def test_google_auth_creates_verified_user_and_returns_token(client, monkeypatch):
+    fake_credential = "google-test-token-" + ("x" * 40)
+
+    async def _fake_verify_google_credential(credential: str) -> dict[str, str]:
+        assert credential == fake_credential
+        return {
+            "email": "google-user@example.com",
+            "sub": "google-sub-123",
+            "name": "Google Tester",
+            "given_name": "Google",
+        }
+
+    monkeypatch.setattr("app.api.routes._verify_google_credential", _fake_verify_google_credential)
+
+    response = client.post(
+        "/auth/google",
+        json={
+            "credential": fake_credential,
+            "username": "google.tester",
+            "sex": "male",
+            "birth_date": "1994-05-09",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["access_token"]
+    assert payload["user"]["email"] == "google-user@example.com"
+    assert payload["user"]["email_verified"] is True
+    assert payload["user"]["username"] == "google.tester"
+
+
+def test_google_auth_requires_birth_date_for_new_user(client, monkeypatch):
+    fake_credential = "google-test-token-" + ("y" * 40)
+
+    async def _fake_verify_google_credential(credential: str) -> dict[str, str]:
+        assert credential == fake_credential
+        return {
+            "email": "google-missing@example.com",
+            "sub": "google-sub-456",
+            "name": "Google Missing",
+            "given_name": "Google",
+        }
+
+    monkeypatch.setattr("app.api.routes._verify_google_credential", _fake_verify_google_credential)
+
+    response = client.post(
+        "/auth/google",
+        json={
+            "credential": fake_credential,
+            "sex": "female",
+        },
+    )
+    assert response.status_code == 422
+    assert "fecha de nacimiento" in response.json()["detail"].lower()

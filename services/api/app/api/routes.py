@@ -12,8 +12,10 @@ from datetime import UTC, date, datetime, time, timedelta
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Annotated, Literal
+from urllib.parse import urlsplit
 from uuid import uuid4
 
+import httpx
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, UploadFile, status
 from PIL import Image, ImageOps
 from pydantic import ValidationError
@@ -80,6 +82,7 @@ from app.schemas import (
     FriendRequestCreate,
     FriendRequestRead,
     GoalFeedback,
+    GoogleAuthRequest,
     IntakeCreate,
     IntakeDeleteResponse,
     IntakeRead,
@@ -513,6 +516,18 @@ def _load_profile_or_404(session: Session, user_id: int) -> UserProfile:
     return profile
 
 
+def _goal_for_day_or_latest(session: Session, *, user_id: int, day: date) -> DailyGoal | None:
+    exact = session.exec(select(DailyGoal).where(DailyGoal.user_id == user_id).where(DailyGoal.date == day)).first()
+    if exact:
+        return exact
+    return session.exec(
+        select(DailyGoal)
+        .where(DailyGoal.user_id == user_id)
+        .where(DailyGoal.date <= day)
+        .order_by(desc(DailyGoal.date), desc(DailyGoal.id))
+    ).first()
+
+
 def _ai_key_status(user: UserAccount) -> UserAIKeyStatusResponse:
     configured = bool(user.ai_api_key_encrypted)
     provider = None
@@ -805,6 +820,93 @@ def _validate_username(username: str) -> str:
             detail="Nombre de usuario inválido. Usa 3-32 caracteres (a-z, 0-9, punto o guion bajo).",
         )
     return normalized
+
+
+def _google_username_slug(raw: str) -> str:
+    ascii_value = (
+        unicodedata.normalize("NFKD", raw)
+        .encode("ascii", "ignore")
+        .decode("ascii")
+        .strip()
+        .lower()
+    )
+    ascii_value = re.sub(r"[^a-z0-9._]+", "_", ascii_value)
+    ascii_value = re.sub(r"_+", "_", ascii_value).strip("._")
+    if len(ascii_value) < 3:
+        ascii_value = f"user_{ascii_value}".strip("_")
+    return ascii_value[:32]
+
+
+def _find_available_username(
+    session: Session,
+    *,
+    base_username: str,
+    reserved_email: str | None = None,
+) -> str:
+    candidate = _google_username_slug(base_username)
+    if not USERNAME_PATTERN.fullmatch(candidate):
+        candidate = f"user_{candidate}".strip("_")[:32]
+    if len(candidate) < 3:
+        candidate = f"user_{uuid4().hex[:6]}"
+
+    existing = session.exec(select(UserAccount).where(UserAccount.username == candidate)).first()
+    pending = session.exec(select(PendingRegistration).where(PendingRegistration.username == candidate)).first()
+    if not existing and (not pending or pending.email == reserved_email):
+        return candidate
+
+    suffix = 1
+    base = candidate[:24].rstrip("._") or "user"
+    while suffix < 10000:
+        candidate = f"{base}_{suffix}"[:32].rstrip("._")
+        if len(candidate) < 3:
+            suffix += 1
+            continue
+        existing = session.exec(select(UserAccount).where(UserAccount.username == candidate)).first()
+        pending = session.exec(select(PendingRegistration).where(PendingRegistration.username == candidate)).first()
+        if not existing and (not pending or pending.email == reserved_email):
+            return candidate
+        suffix += 1
+
+    raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="No se pudo asignar un username válido.")
+
+
+async def _verify_google_credential(credential: str) -> dict[str, str]:
+    settings = get_settings()
+    if not settings.google_web_client_id:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Google Sign-In no está configurado en el servidor.",
+        )
+
+    timeout = httpx.Timeout(settings.google_auth_timeout_seconds, connect=min(1.0, settings.google_auth_timeout_seconds))
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(
+                settings.google_tokeninfo_url,
+                params={"id_token": credential},
+                headers={"Accept": "application/json"},
+            )
+            response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="No se pudo validar la cuenta de Google.") from exc
+
+    payload = response.json()
+    aud = str(payload.get("aud") or "").strip()
+    if aud != settings.google_web_client_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Google client inválido.")
+
+    email = str(payload.get("email") or "").strip().lower()
+    email_verified = str(payload.get("email_verified") or "").strip().lower() == "true"
+    sub = str(payload.get("sub") or "").strip()
+    if not email or not sub or not email_verified:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="La cuenta de Google no devolvió un email verificado.")
+
+    return {
+        "email": email,
+        "sub": sub,
+        "name": str(payload.get("name") or payload.get("given_name") or "").strip(),
+        "given_name": str(payload.get("given_name") or "").strip(),
+    }
 
 
 def _create_or_refresh_pending_registration(
@@ -1108,6 +1210,79 @@ def login(
     )
 
 
+@router.post("/auth/google", response_model=AuthResponse)
+async def google_auth(
+    payload: GoogleAuthRequest,
+    request: Request,
+    session: Annotated[Session, Depends(get_session)],
+) -> AuthResponse:
+    _rate_limit(request, scope="auth_google", limit=12, window_seconds=60)
+    identity = await _verify_google_credential(payload.credential)
+    email = identity["email"]
+
+    user = session.exec(select(UserAccount).where(UserAccount.email == email)).first()
+    pending = session.exec(select(PendingRegistration).where(PendingRegistration.email == email)).first()
+
+    requested_birth_date = payload.birth_date or (pending.birth_date if pending else None)
+    requested_sex = payload.sex or (pending.sex if pending else None)
+
+    if user is None:
+        age = _age_from_birth_date(requested_birth_date)
+        if age is None or age < 13:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Completa sexo y fecha de nacimiento válidos para crear la cuenta con Google.",
+            )
+
+        preferred_username = payload.username or (pending.username if pending else None) or identity["given_name"] or identity["name"] or email.split("@")[0]
+        username = _find_available_username(session, base_username=preferred_username, reserved_email=email)
+        random_password = f"google-oauth-{uuid4().hex}{uuid4().hex}"
+        user = UserAccount(
+            email=email,
+            username=username,
+            password_hash=hash_password(random_password),
+            sex=requested_sex or Sex.other,
+            birth_date=requested_birth_date,
+            email_verified=True,
+            onboarding_completed=False,
+        )
+        session.add(user)
+        session.flush()
+    else:
+        if not user.email_verified:
+            user.email_verified = True
+        if payload.username and payload.username.strip():
+            normalized_username = _validate_username(payload.username)
+            if normalized_username != user.username:
+                existing_username = session.exec(select(UserAccount).where(UserAccount.username == normalized_username)).first()
+                pending_with_username = session.exec(select(PendingRegistration).where(PendingRegistration.username == normalized_username)).first()
+                if existing_username and existing_username.id != user.id:
+                    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Username already in use")
+                if pending_with_username and pending_with_username.email != email:
+                    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Username already in use")
+                user.username = normalized_username
+        if requested_birth_date and user.birth_date is None:
+            age = _age_from_birth_date(requested_birth_date)
+            if age is None or age < 13:
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Debes tener al menos 13 años")
+            user.birth_date = requested_birth_date
+        if requested_sex and user.sex == Sex.other:
+            user.sex = requested_sex
+        session.add(user)
+
+    if pending:
+        session.delete(pending)
+
+    session.commit()
+    profile = _load_profile(session, user.id)
+    token = create_access_token(user.id, user.email)
+    return AuthResponse(
+        access_token=token,
+        user=_auth_user(request, user),
+        profile=_profile_to_read(profile, user) if profile else None,
+    )
+
+
 @router.get("/me", response_model=MeResponse)
 def me(
     request: Request,
@@ -1285,9 +1460,7 @@ def me_analysis(
     )
 
     target_day = day or datetime.now(UTC).date()
-    goal = session.exec(
-        select(DailyGoal).where(DailyGoal.user_id == current_user.id).where(DailyGoal.date == target_day)
-    ).first()
+    goal = _goal_for_day_or_latest(session, user_id=current_user.id, day=target_day)
 
     feedback = None
     if goal:
@@ -1459,8 +1632,24 @@ def _social_post_media_dir(post_id: str) -> Path:
     return root
 
 
-def _social_media_url(request: Request, post_id: str, filename: str) -> str:
-    return f"{str(request.base_url).rstrip('/')}/media/{post_id}/{filename}"
+def _social_media_relative_path(post_id: str, filename: str) -> str:
+    return f"{post_id}/{filename}"
+
+
+def _social_media_public_url(request: Request, media_path: str) -> str:
+    normalized = media_path.strip()
+    if normalized.startswith(("http://", "https://")):
+        parsed = urlsplit(normalized)
+        normalized = parsed.path.lstrip("/")
+        if normalized.startswith("media/"):
+            normalized = normalized[6:]
+        else:
+            return media_path
+    else:
+        normalized = normalized.lstrip("/")
+        if normalized.startswith("media/"):
+            normalized = normalized[6:]
+    return f"{str(request.base_url).rstrip('/')}/media/{normalized}"
 
 
 def _remove_social_post_media(post_id: str) -> None:
@@ -1481,7 +1670,6 @@ def _remove_social_post_media(post_id: str) -> None:
 
 async def _store_social_media_files(
     *,
-    request: Request,
     post_id: str,
     photo_files: list[UploadFile],
 ) -> list[SocialPostMedia]:
@@ -1511,7 +1699,7 @@ async def _store_social_media_files(
         stored.append(
             SocialPostMedia(
                 post_id=post_id,
-                media_url=_social_media_url(request, post_id, filename),
+                media_url=_social_media_relative_path(post_id, filename),
                 width=width,
                 height=height,
                 order_index=index,
@@ -1829,7 +2017,7 @@ def _serialize_social_posts(
                 media=[
                     {
                         "id": media.id,
-                        "media_url": media.media_url,
+                        "media_url": _social_media_public_url(request, media.media_url),
                         "width": media.width,
                         "height": media.height,
                         "order_index": media.order_index,
@@ -2207,7 +2395,7 @@ async def create_social_post(
     if post.type in {SocialPostType.photo, SocialPostType.recipe} and not photo_files:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Este tipo de publicación necesita al menos una foto.")
     try:
-        media_rows = await _store_social_media_files(request=request, post_id=post_id, photo_files=photo_files)
+        media_rows = await _store_social_media_files(post_id=post_id, photo_files=photo_files)
         session.add(post)
         if post.type == SocialPostType.recipe:
             ingredients = _parse_string_list_json(recipe_ingredients_json, "recipe_ingredients_json")
@@ -5828,9 +6016,7 @@ def _day_summary(
                 )
             )
 
-    goal = session.exec(
-        select(DailyGoal).where(DailyGoal.user_id == current_user.id).where(DailyGoal.date == day)
-    ).first()
+    goal = _goal_for_day_or_latest(session, user_id=current_user.id, day=day)
 
     goal_payload = None
     remaining = None
@@ -5976,9 +6162,7 @@ def get_daily_goal(
     session: Annotated[Session, Depends(get_session)],
 ) -> DailyGoalResponse | None:
     profile = _load_profile_or_404(session, current_user.id)
-    goal = session.exec(
-        select(DailyGoal).where(DailyGoal.user_id == current_user.id).where(DailyGoal.date == day)
-    ).first()
+    goal = _goal_for_day_or_latest(session, user_id=current_user.id, day=day)
     if not goal:
         return None
 

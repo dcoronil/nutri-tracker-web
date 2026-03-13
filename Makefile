@@ -107,7 +107,7 @@ mobile-install:
 mobile-web-env: env
 	@mkdir -p "$(RUN_DIR)"
 	@set -a && source "$(ENV_FILE)" && set +a && \
-	printf 'EXPO_PUBLIC_API_BASE_URL=%s\nEXPO_PUBLIC_DEV_SETTINGS=false\n' "$${EXPO_PUBLIC_API_BASE_URL:-http://localhost:8000}" > "$(MOBILE_DIR)/.env"
+	printf 'EXPO_PUBLIC_API_BASE_URL=%s\nEXPO_PUBLIC_DEV_SETTINGS=false\nEXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID=%s\n' "$${EXPO_PUBLIC_API_BASE_URL:-http://localhost:8000}" "$${EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID:-}" > "$(MOBILE_DIR)/.env"
 	@echo "Configurado $(MOBILE_DIR)/.env para web"
 
 mobile-start: mobile-install mobile-web-env

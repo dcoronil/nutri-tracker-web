@@ -57,6 +57,13 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=8, max_length=128)
 
 
+class GoogleAuthRequest(BaseModel):
+    credential: str = Field(min_length=32, max_length=4096)
+    username: str | None = Field(default=None, min_length=3, max_length=32)
+    sex: Sex | None = None
+    birth_date: date | None = None
+
+
 class ProfileInput(BaseModel):
     weight_kg: float = Field(gt=0)
     height_cm: float = Field(gt=0)

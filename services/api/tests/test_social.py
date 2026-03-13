@@ -3,9 +3,9 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from PIL import Image
-from sqlmodel import Session
+from sqlmodel import Session, select
 
-from app.models import SocialPost
+from app.models import SocialPost, SocialPostMedia
 
 def _create_verified_user(client, username_prefix: str) -> dict[str, object]:
     email = f"{username_prefix}-{uuid4().hex[:8]}@example.com"
@@ -106,6 +106,23 @@ def test_profile_avatar_upload_is_returned_in_social_search(client, auth_headers
     items = response.json()["items"]
     assert items
     assert items[0]["avatar_url"]
+
+
+def test_social_post_media_uses_relative_storage_and_current_public_base_url(client, auth_headers, engine):
+    recipe_post = _create_recipe_post(client, auth_headers, caption="media-url-check")
+
+    with Session(engine) as session:
+        media_row = session.exec(select(SocialPostMedia).where(SocialPostMedia.post_id == recipe_post["id"])).first()
+        assert media_row is not None
+        assert media_row.media_url == f"{recipe_post['id']}/social_1.jpg"
+        media_row.media_url = f"http://localhost:8000/media/{recipe_post['id']}/social_1.jpg"
+        session.add(media_row)
+        session.commit()
+
+    feed_response = client.get("/social/feed?limit=10", headers=auth_headers)
+    assert feed_response.status_code == 200
+    item = next(post for post in feed_response.json()["items"] if post["id"] == recipe_post["id"])
+    assert item["media"][0]["media_url"] == f"http://testserver/media/{recipe_post['id']}/social_1.jpg"
 
 
 def test_friend_request_send_accept_and_friends_list(client, auth_headers):
