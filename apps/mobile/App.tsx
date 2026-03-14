@@ -37,7 +37,60 @@ import Svg, { Circle, G, Line, Path, Rect, SvgXml } from "react-native-svg";
 import { BodyAvatarSvg } from "./components/BodyAvatarSvg";
 import { I18nProvider, tGlobal, useI18n } from "./src/i18n";
 import { deleteItem as deleteStoredItem, getItem as getStoredItem, setItem as setStoredItem } from "./src/platform/storage";
+import { appendImageUriToFormData } from "./src/platform/upload";
+import { createSocialApi } from "./src/social/api";
+import { Comments } from "./src/social/components/Comments";
+import { Composer } from "./src/social/components/Composer";
+import { EditableStringListField } from "./src/social/components/EditableStringListField";
+import { SocialFeedSkeleton } from "./src/social/components/FeedSkeleton";
+import { SocialPostCard } from "./src/social/components/PostCard";
+import {
+  socialFeedSortLabel,
+  socialFeedTypeFilterLabel,
+  socialTypeLabel,
+  socialTypeMeta,
+} from "./src/social/presentation";
+import type {
+  SocialComment,
+  SocialFeedResponse,
+  SocialFeedSort,
+  SocialFeedState,
+  SocialFeedTypeFilter,
+  SocialFriendRequest,
+  SocialLikeToggleResponse,
+  SocialOverview,
+  SocialPost,
+  SocialPostType,
+  SocialProfileResponse,
+  SocialProfileState,
+  SocialProgressPayload,
+  SocialRecipePayload,
+  SocialSearchItem,
+  SocialSegmentTab,
+  SocialUser,
+  SocialVisibility,
+} from "./src/social/types";
+import { FeedView } from "./src/social/views/FeedView";
+import { FriendsView } from "./src/social/views/FriendsView";
+import { ExploreView } from "./src/social/views/ExploreView";
+import { ProfileView } from "./src/social/views/ProfileView";
+import { RequestsView } from "./src/social/views/RequestsView";
 import { themeForPlatform } from "./src/theme/colors";
+import { AppLayout } from "./src/web/layouts/AppLayout";
+import { AuthLayout } from "./src/web/layouts/AuthLayout";
+import { OnboardingLayout } from "./src/web/layouts/OnboardingLayout";
+import { PublicLayout } from "./src/web/layouts/PublicLayout";
+import type { WebTopbarAccount, WebTopbarAction, WebTopbarNavItem } from "./src/web/components/WebTopbar";
+import { WebRouterProvider, useWebRouter } from "./src/web/router";
+import {
+  appRouteForTab,
+  isAppRoute,
+  normalizeWebPath,
+  parseSocialRoute,
+  socialProfileRoute,
+  socialRouteForSegment,
+  tabFromAppRoute,
+} from "./src/web/routes";
 
 type NutritionBasis = "per_100g" | "per_100ml" | "per_serving";
 type LookupSource = "local" | "openfoodfacts_imported" | "openfoodfacts_incomplete" | "not_found";
@@ -502,116 +555,6 @@ type RecipeAiDetailResponse = RecipeGenerateResponse & {
   recommended_reason: string | null;
 };
 
-type FriendshipStatus = "none" | "incoming_pending" | "outgoing_pending" | "friends";
-type SocialPostType = "photo" | "recipe" | "progress";
-type SocialVisibility = "public" | "friends" | "private";
-type SocialFeedSort = "relevance" | "recent";
-type SocialFeedTypeFilter = "all" | SocialPostType;
-
-type SocialUser = {
-  id: number;
-  username: string;
-  email: string;
-  avatar_url: string | null;
-};
-
-type SocialSearchItem = SocialUser & {
-  friendship_status: FriendshipStatus;
-  friendship_id: number | null;
-};
-
-type SocialSearchResponse = {
-  items: SocialSearchItem[];
-};
-
-type SocialFriendRequest = {
-  id: number;
-  status: "pending" | "accepted" | "rejected" | "cancelled";
-  created_at: string;
-  responded_at: string | null;
-  user: SocialUser;
-};
-
-type SocialOverview = {
-  friends: SocialUser[];
-  incoming_requests: SocialFriendRequest[];
-  outgoing_requests: SocialFriendRequest[];
-};
-
-type SocialPostMedia = {
-  id: number;
-  media_url: string;
-  width: number | null;
-  height: number | null;
-  order_index: number;
-};
-
-type SocialRecipePayload = {
-  title: string;
-  servings: number | null;
-  prep_time_min: number | null;
-  ingredients: string[];
-  steps: string[];
-  nutrition_kcal: number | null;
-  nutrition_protein_g: number | null;
-  nutrition_carbs_g: number | null;
-  nutrition_fat_g: number | null;
-  tags: string[];
-};
-
-type SocialProgressPayload = {
-  weight_kg: number | null;
-  body_fat_pct: number | null;
-  bmi: number | null;
-  notes: string | null;
-};
-
-type SocialPost = {
-  id: string;
-  type: SocialPostType;
-  caption: string | null;
-  visibility: SocialVisibility;
-  created_at: string;
-  updated_at: string;
-  user: SocialUser;
-  media: SocialPostMedia[];
-  recipe: SocialRecipePayload | null;
-  progress: SocialProgressPayload | null;
-  like_count: number;
-  comment_count: number;
-  liked_by_me: boolean;
-  source: "friends" | "explore" | "self";
-};
-
-type SocialFeedResponse = {
-  items: SocialPost[];
-  next_cursor: string | null;
-};
-
-type SocialProfileResponse = {
-  user: SocialUser;
-  is_me: boolean;
-  is_friend: boolean;
-  outgoing_request_pending: boolean;
-  incoming_request_pending: boolean;
-  posts_count: number;
-  friends_count: number;
-  items: SocialPost[];
-  next_cursor: string | null;
-};
-
-type SocialLikeToggleResponse = {
-  liked: boolean;
-  like_count: number;
-};
-
-type SocialComment = {
-  id: number;
-  text: string;
-  created_at: string;
-  user: SocialUser;
-};
-
 type WidgetTodaySummary = {
   date: string;
   kcal_remaining: number;
@@ -880,6 +823,13 @@ const STREAK_FLAME_SVG_XML =
 const theme = themeForPlatform(Platform.OS);
 const GOOGLE_WEB_CLIENT_ID = typeof process !== "undefined" ? process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID?.trim() ?? "" : "";
 
+function shouldRedirectAuthenticatedRootToApp(): boolean {
+  if (Platform.OS !== "web" || typeof window === "undefined") {
+    return false;
+  }
+  return (window.history?.length ?? 1) <= 1;
+}
+
 type GoogleCredentialCallback = (response: { credential?: string }) => void;
 
 declare global {
@@ -1123,38 +1073,6 @@ function inferApiBaseUrl(): string {
   return "http://localhost:8000";
 }
 
-function guessImageMimeType(nameOrUri: string): string {
-  const normalized = nameOrUri.toLowerCase();
-  if (normalized.endsWith(".png")) {
-    return "image/png";
-  }
-  if (normalized.endsWith(".webp")) {
-    return "image/webp";
-  }
-  if (normalized.endsWith(".heic") || normalized.endsWith(".heif")) {
-    return "image/heic";
-  }
-  return "image/jpeg";
-}
-
-async function appendImageUriToFormData(form: FormData, field: string, uri: string, fallbackName: string): Promise<void> {
-  const sanitizedName = fallbackName.replace(/\?.*$/, "");
-  if (Platform.OS === "web") {
-    const response = await fetch(uri);
-    const blob = await response.blob();
-    form.append(field, blob, sanitizedName);
-    return;
-  }
-  form.append(
-    field,
-    {
-      uri,
-      name: sanitizedName,
-      type: guessImageMimeType(sanitizedName || uri),
-    } as unknown as Blob,
-  );
-}
-
 async function prepareAvatarUploadUri(asset: ImagePicker.ImagePickerAsset): Promise<string> {
   if (!asset.uri) {
     throw new Error("Avatar image missing uri");
@@ -1189,7 +1107,7 @@ async function prepareAvatarUploadUri(asset: ImagePicker.ImagePickerAsset): Prom
 
 type WebBreakpoint = "mobile" | "tablet" | "desktop";
 const WEB_TOPBAR_HEIGHT = 72;
-const WEB_NAVBAR_HEIGHT = 52;
+const WEB_NAVBAR_HEIGHT = 0;
 const WEB_CHROME_TOTAL_HEIGHT = WEB_TOPBAR_HEIGHT + WEB_NAVBAR_HEIGHT;
 const BARCODE_TYPES: BarcodeType[] = ["ean13", "ean8", "upc_a", "upc_e"];
 
@@ -1494,76 +1412,6 @@ function birthDateValueFromParts(parts: BirthDateParts): string {
   return `${year}-${month}-${day}`;
 }
 
-function formatRelativeTime(iso: string): string {
-  const timestamp = new Date(iso).getTime();
-  if (!Number.isFinite(timestamp)) {
-    return "-";
-  }
-  const diffSeconds = Math.max(0, Math.round((Date.now() - timestamp) / 1000));
-  if (diffSeconds < 45) {
-    return "Ahora";
-  }
-  if (diffSeconds < 3600) {
-    const minutes = Math.max(1, Math.round(diffSeconds / 60));
-    return `Hace ${minutes} min`;
-  }
-  if (diffSeconds < 86400) {
-    const hours = Math.max(1, Math.round(diffSeconds / 3600));
-    return `Hace ${hours} h`;
-  }
-  if (diffSeconds < 86400 * 7) {
-    const days = Math.max(1, Math.round(diffSeconds / 86400));
-    return `Hace ${days} d`;
-  }
-  return new Date(iso).toLocaleDateString("es-ES", { day: "2-digit", month: "short" });
-}
-
-function socialTypeLabel(type: SocialPostType): string {
-  if (type === "recipe") {
-    return "Receta";
-  }
-  if (type === "progress") {
-    return "Progreso";
-  }
-  return "Foto";
-}
-
-function socialVisibilityLabel(visibility: SocialVisibility): string {
-  if (visibility === "public") {
-    return "Pública";
-  }
-  if (visibility === "private") {
-    return "Privada";
-  }
-  return "Amigos";
-}
-
-function socialTypeMeta(type: SocialPostType): {
-  color: string;
-  borderColor: string;
-  softBackground: string;
-} {
-  if (type === "recipe") {
-    return {
-      color: theme.carbs,
-      borderColor: "rgba(245,158,11,0.34)",
-      softBackground: "rgba(245,158,11,0.10)",
-    };
-  }
-  if (type === "progress") {
-    return {
-      color: theme.protein,
-      borderColor: "rgba(96,165,250,0.34)",
-      softBackground: "rgba(96,165,250,0.10)",
-    };
-  }
-  return {
-    color: theme.accent,
-    borderColor: "rgba(45,212,191,0.34)",
-    softBackground: "rgba(45,212,191,0.10)",
-  };
-}
-
 type MacroAccentTone = "kcal" | "protein" | "carbs" | "fat";
 
 function macroAccentMeta(tone: MacroAccentTone): {
@@ -1597,14 +1445,6 @@ function macroAccentMeta(tone: MacroAccentTone): {
     softBackground: "rgba(45,212,191,0.10)",
     borderColor: "rgba(45,212,191,0.30)",
   };
-}
-
-function socialFeedSortLabel(sort: SocialFeedSort): string {
-  return sort === "recent" ? "Más reciente" : "Relevancia";
-}
-
-function socialFeedTypeFilterLabel(type: SocialFeedTypeFilter): string {
-  return type === "all" ? "Todo" : socialTypeLabel(type);
 }
 
 function passwordStrengthMeta(password: string): {
@@ -2781,225 +2621,23 @@ function AuthProvider({ children }: { children: import("react").ReactNode }) {
     [request],
   );
 
-  const searchSocialUsers = useCallback(
-    async (query: string, limit = 12): Promise<SocialSearchItem[]> => {
-      const trimmed = query.trim();
-      if (trimmed.length < 1) {
-        return [];
-      }
-      const response = await request<SocialSearchResponse>(`/social/users/search?q=${encodeURIComponent(trimmed)}&limit=${limit}`);
-      return response.items;
-    },
-    [request],
-  );
-
-  const fetchSocialOverview = useCallback(
-    async (): Promise<SocialOverview> => request<SocialOverview>("/social/friendships"),
-    [request],
-  );
-
-  const sendFriendRequest = useCallback(
-    async (targetUserId: number): Promise<SocialFriendRequest> => {
-      return request<SocialFriendRequest>("/social/friend-requests", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ target_user_id: targetUserId }),
-      });
-    },
-    [request],
-  );
-
-  const acceptFriendRequest = useCallback(
-    async (friendshipId: number): Promise<SocialFriendRequest> => {
-      return request<SocialFriendRequest>(`/social/friend-requests/${friendshipId}/accept`, {
-        method: "POST",
-      });
-    },
-    [request],
-  );
-
-  const rejectFriendRequest = useCallback(
-    async (friendshipId: number): Promise<SocialFriendRequest> => {
-      return request<SocialFriendRequest>(`/social/friends/requests/${friendshipId}/reject`, {
-        method: "POST",
-      });
-    },
-    [request],
-  );
-
-  const fetchSocialFeed = useCallback(
-    async (input?: {
-      cursor?: string | null;
-      limit?: number;
-      scope?: "feed" | "explore";
-      sort?: SocialFeedSort;
-      postType?: SocialFeedTypeFilter;
-    }): Promise<SocialFeedResponse> => {
-      const params = new URLSearchParams();
-      if (input?.cursor) {
-        params.set("cursor", input.cursor);
-      }
-      if (typeof input?.limit === "number") {
-        params.set("limit", String(input.limit));
-      }
-      if (input?.scope) {
-        params.set("scope", input.scope);
-      }
-      if (input?.sort) {
-        params.set("sort", input.sort);
-      }
-      if (input?.postType && input.postType !== "all") {
-        params.set("post_type", input.postType);
-      }
-      const suffix = params.toString() ? `?${params.toString()}` : "";
-      return request<SocialFeedResponse>(`/social/feed${suffix}`);
-    },
-    [request],
-  );
-
-  const fetchSocialProfile = useCallback(
-    async (input?: { userId?: number; cursor?: string | null; limit?: number }): Promise<SocialProfileResponse> => {
-      const params = new URLSearchParams();
-      if (input?.cursor) {
-        params.set("cursor", input.cursor);
-      }
-      if (typeof input?.limit === "number") {
-        params.set("limit", String(input.limit));
-      }
-      const suffix = params.toString() ? `?${params.toString()}` : "";
-      const path = input?.userId ? `/social/users/${input.userId}/posts${suffix}` : `/social/me/posts${suffix}`;
-      return request<SocialProfileResponse>(path);
-    },
-    [request],
-  );
-
-  const createSocialPost = useCallback(
-    async (payload: {
-      type: SocialPostType;
-      caption?: string;
-      visibility: SocialVisibility;
-      photos?: string[];
-      recipe?: SocialRecipePayload | null;
-      progress?: SocialProgressPayload | null;
-    }): Promise<SocialPost> => {
-      const form = new FormData();
-      form.append("type", payload.type);
-      form.append("visibility", payload.visibility);
-      if (payload.caption?.trim()) {
-        form.append("caption", payload.caption.trim());
-      }
-
-      if (payload.type === "recipe" && payload.recipe) {
-        form.append("recipe_title", payload.recipe.title.trim());
-        if (payload.recipe.servings != null) {
-          form.append("recipe_servings", String(payload.recipe.servings));
-        }
-        if (payload.recipe.prep_time_min != null) {
-          form.append("recipe_prep_time_min", String(payload.recipe.prep_time_min));
-        }
-        form.append("recipe_ingredients_json", JSON.stringify(payload.recipe.ingredients));
-        form.append("recipe_steps_json", JSON.stringify(payload.recipe.steps));
-        form.append("recipe_tags_json", JSON.stringify(payload.recipe.tags));
-        if (payload.recipe.nutrition_kcal != null) {
-          form.append("recipe_nutrition_kcal", String(payload.recipe.nutrition_kcal));
-        }
-        if (payload.recipe.nutrition_protein_g != null) {
-          form.append("recipe_nutrition_protein_g", String(payload.recipe.nutrition_protein_g));
-        }
-        if (payload.recipe.nutrition_carbs_g != null) {
-          form.append("recipe_nutrition_carbs_g", String(payload.recipe.nutrition_carbs_g));
-        }
-        if (payload.recipe.nutrition_fat_g != null) {
-          form.append("recipe_nutrition_fat_g", String(payload.recipe.nutrition_fat_g));
-        }
-      }
-
-      if (payload.type === "progress" && payload.progress) {
-        if (payload.progress.weight_kg != null) {
-          form.append("progress_weight_kg", String(payload.progress.weight_kg));
-        }
-        if (payload.progress.body_fat_pct != null) {
-          form.append("progress_body_fat_pct", String(payload.progress.body_fat_pct));
-        }
-        if (payload.progress.bmi != null) {
-          form.append("progress_bmi", String(payload.progress.bmi));
-        }
-        if (payload.progress.notes?.trim()) {
-          form.append("progress_notes", payload.progress.notes.trim());
-        }
-      }
-
-      const photos = payload.photos ?? [];
-      for (let index = 0; index < photos.length; index += 1) {
-        const uri = photos[index];
-        if (!uri) {
-          continue;
-        }
-        const fallbackName = uri.split("/").pop() || `social-${payload.type}-${index + 1}.jpg`;
-        await appendImageUriToFormData(form, "photos", uri, fallbackName);
-      }
-
-      return request<SocialPost>("/social/posts", {
-        method: "POST",
-        body: form,
-      });
-    },
-    [request],
-  );
-
-  const updateSocialPostVisibility = useCallback(
-    async (postId: string, visibility: SocialVisibility): Promise<SocialPost> => {
-      return request<SocialPost>(`/social/posts/${postId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ visibility }),
-      });
-    },
-    [request],
-  );
-
-  const deleteSocialPost = useCallback(
-    async (postId: string): Promise<void> => {
-      await request(`/social/posts/${postId}`, {
-        method: "DELETE",
-      });
-    },
-    [request],
-  );
-
-  const likeSocialPost = useCallback(
-    async (postId: string): Promise<SocialLikeToggleResponse> => {
-      return request<SocialLikeToggleResponse>(`/social/posts/${postId}/like`, {
-        method: "POST",
-      });
-    },
-    [request],
-  );
-
-  const unlikeSocialPost = useCallback(
-    async (postId: string): Promise<SocialLikeToggleResponse> => {
-      return request<SocialLikeToggleResponse>(`/social/posts/${postId}/like`, {
-        method: "DELETE",
-      });
-    },
-    [request],
-  );
-
-  const fetchSocialComments = useCallback(
-    async (postId: string): Promise<SocialComment[]> => request<SocialComment[]>(`/social/posts/${postId}/comments`),
-    [request],
-  );
-
-  const createSocialComment = useCallback(
-    async (postId: string, text: string): Promise<SocialComment> => {
-      return request<SocialComment>(`/social/posts/${postId}/comments`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
-      });
-    },
-    [request],
-  );
+  const socialApi = useMemo(() => createSocialApi(request), [request]);
+  const {
+    searchSocialUsers,
+    fetchSocialOverview,
+    sendFriendRequest,
+    acceptFriendRequest,
+    rejectFriendRequest,
+    fetchSocialFeed,
+    fetchSocialProfile,
+    createSocialPost,
+    updateSocialPostVisibility,
+    deleteSocialPost,
+    likeSocialPost,
+    unlikeSocialPost,
+    fetchSocialComments,
+    createSocialComment,
+  } = socialApi;
 
   const value = useMemo<AuthContextValue>(
     () => ({
@@ -3849,14 +3487,68 @@ function AddActionCard(props: {
   );
 }
 
-function WelcomeScreen({ onCreate, onLogin }: { onCreate: () => void; onLogin: () => void }) {
+function WelcomeScreen(props: {
+  onCreate: () => void;
+  onLogin: () => void;
+  onHome?: () => void;
+  createLabel?: string;
+  loginLabel?: string;
+  topbarNavItems?: WebTopbarNavItem[];
+  topbarActions?: WebTopbarAction[];
+  topbarAccount?: WebTopbarAccount;
+}) {
   const { width } = useWindowDimensions();
   const { t } = useI18n();
   const isWeb = Platform.OS === "web";
   const desktop = isDesktopWebLayout(width);
   const scrollRef = useRef<ScrollView | null>(null);
+  const landingOffsetsRef = useRef<{ features: number; howItWorks: number }>({
+    features: 0,
+    howItWorks: 0,
+  });
   const heroIntro = useRef(new Animated.Value(0)).current;
   const heroFloat = useRef(new Animated.Value(0)).current;
+
+  const scrollToLandingOffset = useCallback((key: "features" | "howItWorks") => {
+    scrollRef.current?.scrollTo({
+      y: Math.max(0, landingOffsetsRef.current[key] - 92),
+      animated: true,
+    });
+  }, []);
+
+  const defaultTopbarNavItems = useMemo<WebTopbarNavItem[]>(
+    () => [
+      {
+        key: "home",
+        label: "Inicio",
+        active: false,
+        onPress: () => {
+          scrollRef.current?.scrollTo({ y: 0, animated: true });
+        },
+      },
+      {
+        key: "features",
+        label: "Funciones",
+        active: false,
+        onPress: () => scrollToLandingOffset("features"),
+      },
+      {
+        key: "how-it-works",
+        label: "Cómo funciona",
+        active: false,
+        onPress: () => scrollToLandingOffset("howItWorks"),
+      },
+    ],
+    [scrollToLandingOffset],
+  );
+
+  const defaultTopbarActions = useMemo<WebTopbarAction[]>(
+    () => [
+      { label: "Iniciar sesión", onPress: props.onLogin },
+      { label: "Crear cuenta", onPress: props.onCreate, primary: true },
+    ],
+    [props.onCreate, props.onLogin],
+  );
 
   const features = [
     {
@@ -3998,30 +3690,31 @@ function WelcomeScreen({ onCreate, onLogin }: { onCreate: () => void; onLogin: (
       <SafeAreaView style={styles.screen}>
         <ScrollView contentContainerStyle={styles.authScroll} keyboardShouldPersistTaps="handled">
           <View style={styles.brandCard}>
-            <Text style={styles.brandEyebrow}>NUTRI TRACKER</Text>
+            <Text style={styles.brandEyebrow}>NUTRIA</Text>
             <Text style={styles.brandTitle}>{t("Nutrición clara, seguimiento real y IA útil.")}</Text>
             <Text style={styles.brandText}>
               {t("Escanea productos, registra comidas y usa IA para entender mejor lo que comes y cómo progresas.")}
             </Text>
           </View>
-          <PrimaryButton title={t("Crear cuenta")} onPress={onCreate} />
-          <SecondaryButton title={t("Iniciar sesión")} onPress={onLogin} />
+          <PrimaryButton title={t(props.createLabel ?? "Crear cuenta")} onPress={props.onCreate} />
+          <SecondaryButton title={t(props.loginLabel ?? "Iniciar sesión")} onPress={props.onLogin} />
         </ScrollView>
       </SafeAreaView>
     );
   }
 
   return (
-    <SafeAreaView style={styles.webLandingScreen}>
-      <AuthWebTopbar
-        onHome={() => {
+    <PublicLayout
+      onHome={
+        props.onHome ??
+        (() => {
           scrollRef.current?.scrollTo({ y: 0, animated: true });
-        }}
-        menuActions={[
-          { label: "Registrarte", onPress: onCreate, primary: true },
-          { label: "Iniciar sesión", onPress: onLogin },
-        ]}
-      />
+        })
+      }
+      navItems={props.topbarNavItems ?? defaultTopbarNavItems}
+      actions={props.topbarAccount ? undefined : props.topbarActions ?? defaultTopbarActions}
+      account={props.topbarAccount}
+    >
       <ScrollView
         ref={scrollRef}
         contentContainerStyle={styles.webLandingScroll}
@@ -4052,8 +3745,8 @@ function WelcomeScreen({ onCreate, onLogin }: { onCreate: () => void; onLogin: (
               {t("Escanea productos, afina fotos con preguntas de apoyo cuando hace falta contexto y genera opciones según lo que tienes y lo que te falta hoy.")}
             </Text>
             <View style={styles.webLandingHeroActions}>
-              <PrimaryButton title={t("Empezar")} onPress={onCreate} style={styles.webLandingPrimaryCta} />
-              <SecondaryButton title={t("Iniciar sesión")} onPress={onLogin} style={styles.webLandingSecondaryCta} />
+              <PrimaryButton title={t(props.createLabel ?? "Empezar")} onPress={props.onCreate} style={styles.webLandingPrimaryCta} />
+              <SecondaryButton title={t(props.loginLabel ?? "Iniciar sesión")} onPress={props.onLogin} style={styles.webLandingSecondaryCta} />
             </View>
             <View style={[styles.webLandingHeroSignalRow, desktop && styles.webLandingHeroSignalRowDesktop]}>
               {heroSignals.map((signal) => (
@@ -4080,7 +3773,7 @@ function WelcomeScreen({ onCreate, onLogin }: { onCreate: () => void; onLogin: (
               <Animated.View style={[styles.webLandingMockupPrimary, { transform: [{ scale: heroPrimaryScale }] }]}>
                 <View style={styles.webLandingMockupHeader}>
                   <View style={styles.webLandingMockupHeaderCopy}>
-                    <Text style={styles.webLandingMockupEyebrow}>NUTRI TRACKER</Text>
+                    <Text style={styles.webLandingMockupEyebrow}>NUTRIA</Text>
                     <Text style={styles.webLandingMockupTitle}>{t("Vista diaria")}</Text>
                   </View>
                   <View style={styles.webLandingMockupStatusPill}>
@@ -4137,7 +3830,12 @@ function WelcomeScreen({ onCreate, onLogin }: { onCreate: () => void; onLogin: (
           </Animated.View>
         </View>
 
-        <View style={styles.webLandingSection}>
+        <View
+          style={styles.webLandingSection}
+          onLayout={(event) => {
+            landingOffsetsRef.current.features = event.nativeEvent.layout.y;
+          }}
+        >
           <View style={styles.webLandingSectionHeader}>
             <Text style={styles.webLandingSectionTitle}>{t("Todo lo importante en un mismo flujo")}</Text>
             <Text style={styles.webLandingSectionSubtitle}>
@@ -4191,14 +3889,19 @@ function WelcomeScreen({ onCreate, onLogin }: { onCreate: () => void; onLogin: (
               <View style={styles.webLandingFeatureSummary}>
                 <Text style={styles.webLandingFeatureSummaryTitle}>{t("Una pantalla para registrar. Otra para entender.")}</Text>
                 <Text style={styles.webLandingFeatureSummaryText}>
-                  {t("NutriTracker junta escaneo, IA con apoyo contextual y recetas guiadas por ingredientes en un sistema pensado para decidir mejor cada día.")}
+                  {t("NutrIA junta escaneo, IA con apoyo contextual y recetas guiadas por ingredientes en un sistema pensado para decidir mejor cada día.")}
                 </Text>
               </View>
             </View>
           </View>
         </View>
 
-        <View style={styles.webLandingSection}>
+        <View
+          style={styles.webLandingSection}
+          onLayout={(event) => {
+            landingOffsetsRef.current.howItWorks = event.nativeEvent.layout.y;
+          }}
+        >
           <View style={styles.webLandingSectionHeader}>
             <Text style={styles.webLandingSectionTitle}>{t("Cómo funciona")}</Text>
             <Text style={styles.webLandingSectionSubtitle}>
@@ -4233,122 +3936,13 @@ function WelcomeScreen({ onCreate, onLogin }: { onCreate: () => void; onLogin: (
               </Text>
             </View>
             <View style={[styles.webLandingFinalActions, desktop && styles.webLandingFinalActionsDesktop]}>
-              <PrimaryButton title={t("Crear cuenta")} onPress={onCreate} style={styles.webLandingFinalPrimaryCta} />
-              <SecondaryButton title={t("Iniciar sesión")} onPress={onLogin} style={styles.webLandingFinalSecondaryCta} />
+              <PrimaryButton title={t(props.createLabel ?? "Crear cuenta")} onPress={props.onCreate} style={styles.webLandingFinalPrimaryCta} />
+              <SecondaryButton title={t(props.loginLabel ?? "Iniciar sesión")} onPress={props.onLogin} style={styles.webLandingFinalSecondaryCta} />
             </View>
           </View>
         </View>
       </ScrollView>
-    </SafeAreaView>
-  );
-}
-
-function AuthWebTopbar(props: {
-  onHome: () => void;
-  menuActions?: Array<{ label: string; onPress: () => void; primary?: boolean }>;
-}) {
-  if (Platform.OS !== "web") {
-    return null;
-  }
-  const { language, setLanguage, t } = useI18n();
-  const [menuOpen, setMenuOpen] = useState(false);
-  const menuActions = props.menuActions ?? [];
-  return (
-    <>
-      <View style={styles.authWebTopShell}>
-        <View style={styles.authWebTopBar}>
-          <Pressable
-            style={({ pressed }) => [styles.webBrandButton, pressed && styles.webBrandButtonPressed]}
-            onPress={() => {
-              setMenuOpen(false);
-              props.onHome();
-            }}
-          >
-            <Text style={styles.webBrandText}>NutriTracker</Text>
-          </Pressable>
-          <View style={styles.authWebTopControls}>
-            <View style={styles.authWebLanguageSwitch}>
-              {[
-                { value: "es" as const, flag: "🇪🇸", label: "ES" },
-                { value: "en" as const, flag: "🇬🇧", label: "EN" },
-              ].map((option) => (
-                <Pressable
-                  key={option.value}
-                  onPress={() => {
-                    void setLanguage(option.value);
-                  }}
-                  style={({ pressed }) => [
-                    styles.authWebLanguageOption,
-                    language === option.value && styles.authWebLanguageOptionActive,
-                    pressed && styles.authWebLanguageOptionPressed,
-                  ]}
-                >
-                  <Text style={styles.authWebLanguageFlag}>{option.flag}</Text>
-                  <Text style={[styles.authWebLanguageCode, language === option.value && styles.authWebLanguageCodeActive]}>
-                    {option.label}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-            {menuActions.length ? (
-              <Pressable
-                hitSlop={8}
-                style={({ pressed }) => [styles.webProfileButton, pressed && styles.webProfileButtonPressed]}
-                onPress={() => setMenuOpen((current) => !current)}
-              >
-                <View style={styles.webProfileAvatar}>
-                  <Text style={styles.webProfileAvatarText}>N</Text>
-                </View>
-              </Pressable>
-            ) : (
-              <View style={styles.authWebTopSpacer} />
-            )}
-          </View>
-        </View>
-      </View>
-      {menuOpen ? (
-        <View style={styles.authWebMenuLayer} pointerEvents="box-none">
-          <Pressable
-            style={styles.accountMenuBackdrop}
-            onPress={() => {
-              setMenuOpen(false);
-            }}
-          >
-            <View style={styles.accountMenuScrim} />
-          </Pressable>
-          <View style={styles.authWebMenuContainer}>
-            <Pressable style={styles.authWebMenuCard} onPress={() => {}}>
-              <Text style={styles.accountMenuTitle}>{t("Accede a NutriTracker")}</Text>
-              <View style={styles.authWebAccountMenuActions}>
-                {menuActions.map((action) => (
-                  <Pressable
-                    key={action.label}
-                    style={({ pressed }) => [
-                      styles.authWebAccountMenuButton,
-                      action.primary && styles.authWebAccountMenuButtonPrimary,
-                      pressed && styles.authWebAccountMenuButtonPressed,
-                    ]}
-                    onPress={() => {
-                      setMenuOpen(false);
-                      action.onPress();
-                    }}
-                  >
-                    <Text
-                      style={[
-                        styles.authWebAccountMenuButtonText,
-                        action.primary && styles.authWebAccountMenuButtonTextPrimary,
-                      ]}
-                    >
-                      {t(action.label)}
-                    </Text>
-                  </Pressable>
-                ))}
-              </View>
-            </Pressable>
-          </View>
-        </View>
-      ) : null}
-    </>
+    </PublicLayout>
   );
 }
 
@@ -4521,7 +4115,7 @@ function WebSignupWizard({ onBack }: { onBack: () => void }) {
   const validateStep = useCallback((step: WebSignupStep): boolean => {
     if (step === 1) {
       if (!draft.displayName.trim()) {
-        showAlert("Nombre", "Escribe cómo quieres aparecer en NutriTracker.");
+        showAlert("Nombre", "Escribe cómo quieres aparecer en NutrIA.");
         return false;
       }
       if (!derivedUsername || usernameStatus.state === "invalid") {
@@ -4703,7 +4297,7 @@ function WebSignupWizard({ onBack }: { onBack: () => void }) {
     if (step === 1) {
       return {
         title: "¿Cuál es tu nombre?",
-        subtitle: "Lo usaremos como alias público dentro de NutriTracker. Puede ser tu nombre o un alias corto.",
+        subtitle: "Lo usaremos como alias público dentro de NutrIA. Puede ser tu nombre o un alias corto.",
       };
     }
     if (step === 2) {
@@ -5055,7 +4649,7 @@ function WebSignupWizard({ onBack }: { onBack: () => void }) {
         />
         <WebWizardCheckbox
           checked={draft.acceptedTerms}
-          label="Acepto los términos y que NutriTracker use estos datos para calcular mi plan."
+          label="Acepto los términos y que NutrIA use estos datos para calcular mi plan."
           onPress={() => updateDraft({ acceptedTerms: !draft.acceptedTerms })}
         />
 
@@ -5094,12 +4688,11 @@ function WebSignupWizard({ onBack }: { onBack: () => void }) {
   const visualStep = incomingStep ?? displayStep;
 
   return (
-    <SafeAreaView style={styles.webOnboardingScreen}>
-      <AuthWebTopbar onHome={onBack} />
+    <OnboardingLayout onHome={onBack} actions={[{ label: "Iniciar sesión", onPress: onBack }]}>
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.flex1}>
         <ScrollView contentContainerStyle={styles.webOnboardingScroll} keyboardShouldPersistTaps="handled">
           <View style={styles.webOnboardingBrandBlock}>
-            <Text style={styles.webOnboardingBrandEyebrow}>NUTRITRACKER</Text>
+            <Text style={styles.webOnboardingBrandEyebrow}>NUTRIA</Text>
             <Text style={styles.webOnboardingBrandTitle}>Configura tu plan en unos pasos claros</Text>
             <Text style={styles.webOnboardingBrandSubtitle}>Nutrición, macros y seguimiento corporal sin convertir esto en un formulario infinito.</Text>
           </View>
@@ -5160,7 +4753,7 @@ function WebSignupWizard({ onBack }: { onBack: () => void }) {
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
-    </SafeAreaView>
+    </OnboardingLayout>
   );
 }
 
@@ -5232,8 +4825,7 @@ function WebOnboardingFinalizeScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.webOnboardingScreen}>
-      <AuthWebTopbar onHome={goToWelcome} />
+    <OnboardingLayout onHome={goToWelcome}>
       <View style={styles.webOnboardingCenterWrap}>
         <View style={[styles.webOnboardingCard, styles.webOnboardingFinalizeCard]}>
           <WebWizardProgress step={7} total={7} />
@@ -5258,7 +4850,7 @@ function WebOnboardingFinalizeScreen() {
           </View>
         </View>
       </View>
-    </SafeAreaView>
+    </OnboardingLayout>
   );
 }
 
@@ -5692,19 +5284,18 @@ function WebLoginScreen({ onBack, onCreate }: { onBack: () => void; onCreate: ()
   };
 
   return (
-    <SafeAreaView style={styles.webOnboardingScreen}>
-      <AuthWebTopbar onHome={onBack} />
+    <AuthLayout onHome={onBack} actions={[{ label: "Crear cuenta", onPress: onCreate, primary: true }]}>
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.flex1}>
         <ScrollView contentContainerStyle={styles.webOnboardingScroll} keyboardShouldPersistTaps="handled">
           <View style={styles.webOnboardingBrandBlock}>
-            <Text style={styles.webOnboardingBrandEyebrow}>NUTRITRACKER</Text>
+            <Text style={styles.webOnboardingBrandEyebrow}>NUTRIA</Text>
             <Text style={styles.webOnboardingBrandTitle}>Bienvenido de nuevo</Text>
             <Text style={styles.webOnboardingBrandSubtitle}>Accede para seguir con tu nutrición, progreso y objetivos.</Text>
           </View>
 
           <View style={[styles.webOnboardingCard, styles.webAuthCardCompact]}>
             <View style={styles.webAuthHeader}>
-              <Text style={styles.webAuthCardTitle}>Inicia sesión en NutriTracker</Text>
+              <Text style={styles.webAuthCardTitle}>Inicia sesión en NutrIA</Text>
               <Text style={styles.webAuthCardSubtitle}>Usa tu correo o tu nombre de usuario si ya tienes cuenta verificada.</Text>
             </View>
 
@@ -5789,7 +5380,7 @@ function WebLoginScreen({ onBack, onCreate }: { onBack: () => void; onCreate: ()
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
-    </SafeAreaView>
+    </AuthLayout>
   );
 }
 
@@ -5861,14 +5452,54 @@ function LoginScreen({ onBack, onCreate }: { onBack: () => void; onCreate: () =>
 }
 
 function AuthStack() {
+  const isWeb = Platform.OS === "web";
+  const router = useWebRouter();
   const [screen, setScreen] = useState<AuthStackScreen>("welcome");
+
+  useEffect(() => {
+    if (!isWeb) {
+      return;
+    }
+    const normalized = normalizeWebPath(router.path);
+    if (normalized === "/login") {
+      setScreen("login");
+      return;
+    }
+    if (normalized === "/register") {
+      setScreen("signup");
+      return;
+    }
+    if (normalized === "/") {
+      setScreen("welcome");
+      return;
+    }
+    router.replace("/");
+    setScreen("welcome");
+  }, [isWeb, router]);
+
+  const goToScreen = useCallback(
+    (nextScreen: AuthStackScreen, options?: { replace?: boolean }) => {
+      if (!isWeb) {
+        setScreen(nextScreen);
+        return;
+      }
+      const nextPath = nextScreen === "login" ? "/login" : nextScreen === "signup" ? "/register" : "/";
+      if (options?.replace) {
+        router.replace(nextPath);
+        return;
+      }
+      router.navigate(nextPath);
+    },
+    [isWeb, router],
+  );
+
   if (screen === "signup") {
-    return <SignupScreen onBack={() => setScreen("welcome")} />;
+    return <SignupScreen onBack={() => goToScreen("welcome")} />;
   }
   if (screen === "login") {
-    return <LoginScreen onBack={() => setScreen("welcome")} onCreate={() => setScreen("signup")} />;
+    return <LoginScreen onBack={() => goToScreen("welcome")} onCreate={() => goToScreen("signup")} />;
   }
-  return <WelcomeScreen onCreate={() => setScreen("signup")} onLogin={() => setScreen("login")} />;
+  return <WelcomeScreen onCreate={() => goToScreen("signup")} onLogin={() => goToScreen("login")} />;
 }
 
 function VerifyEmailOnlyScreen() {
@@ -5896,9 +5527,18 @@ function VerifyEmailOnlyScreen() {
   }, [cooldown]);
 
   if (!email) {
+    if (isWeb) {
+      return (
+        <AuthLayout onHome={goToWelcome}>
+          <View style={styles.centered}>
+            <Text style={styles.helperText}>Falta email para verificar.</Text>
+            <SecondaryButton title="Volver" onPress={auth.clearPendingVerification} />
+          </View>
+        </AuthLayout>
+      );
+    }
     return (
       <SafeAreaView style={styles.screen}>
-        {isWeb ? <AuthWebTopbar onHome={goToWelcome} /> : null}
         <View style={styles.centered}>
           <Text style={styles.helperText}>Falta email para verificar.</Text>
           <SecondaryButton title="Volver" onPress={auth.clearPendingVerification} />
@@ -5936,37 +5576,40 @@ function VerifyEmailOnlyScreen() {
     }
   };
 
-  return (
-    <SafeAreaView style={styles.screen}>
-      {isWeb ? <AuthWebTopbar onHome={goToWelcome} /> : null}
-      <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.flex1}>
-        <ScrollView contentContainerStyle={[styles.authScroll, isWeb && styles.authScrollWebOffset]} keyboardShouldPersistTaps="handled">
-          <AppHeader title="Verificar email" subtitle={tx("Código OTP de 6 dígitos para {{email}}", { email })} />
+  const content = (
+    <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.flex1}>
+      <ScrollView contentContainerStyle={[styles.authScroll, isWeb && styles.authScrollWebOffset]} keyboardShouldPersistTaps="handled">
+        <AppHeader title="Verificar email" subtitle={tx("Código OTP de 6 dígitos para {{email}}", { email })} />
 
-          <InputField
-            label="Código"
-            value={code}
-            onChangeText={setCode}
-            keyboardType="numeric"
-            autoCapitalize="none"
-            placeholder="123456"
-          />
+        <InputField
+          label="Código"
+          value={code}
+          onChangeText={setCode}
+          keyboardType="numeric"
+          autoCapitalize="none"
+          placeholder="123456"
+        />
 
-          {auth.otpHint ? <Text style={styles.devHint}>DEV OTP: {auth.otpHint}</Text> : null}
+        {auth.otpHint ? <Text style={styles.devHint}>DEV OTP: {auth.otpHint}</Text> : null}
 
-          <PrimaryButton title="Verificar" onPress={verify} loading={loading} />
-          <SecondaryButton
-            title={cooldown > 0 ? tx("Reenviar en {{cooldown}}s", { cooldown }) : "Reenviar código"}
-            onPress={resend}
-            disabled={cooldown > 0 || resending}
-          />
+        <PrimaryButton title="Verificar" onPress={verify} loading={loading} />
+        <SecondaryButton
+          title={cooldown > 0 ? tx("Reenviar en {{cooldown}}s", { cooldown }) : "Reenviar código"}
+          onPress={resend}
+          disabled={cooldown > 0 || resending}
+        />
 
-          {auth.user ? <SecondaryButton title="Cerrar sesión" onPress={() => void auth.logout()} /> : null}
-          {!auth.user ? <SecondaryButton title="Volver" onPress={auth.clearPendingVerification} /> : null}
-        </ScrollView>
-      </KeyboardAvoidingView>
-    </SafeAreaView>
+        {auth.user ? <SecondaryButton title="Cerrar sesión" onPress={() => void auth.logout()} /> : null}
+        {!auth.user ? <SecondaryButton title="Volver" onPress={auth.clearPendingVerification} /> : null}
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
+
+  if (isWeb) {
+    return <AuthLayout onHome={goToWelcome}>{content}</AuthLayout>;
+  }
+
+  return <SafeAreaView style={styles.screen}>{content}</SafeAreaView>;
 }
 
 function ChoiceRow<T extends string>(props: {
@@ -8052,275 +7695,11 @@ function HistoryScreen({ isActive }: { isActive: boolean }) {
   );
 }
 
-type SocialSegmentTab = "feed" | "explore" | "friends" | "requests";
-
-type SocialFeedState = {
-  items: SocialPost[];
-  nextCursor: string | null;
-  loading: boolean;
-  loaded: boolean;
-  refreshing: boolean;
-  loadingMore: boolean;
-  error: string | null;
-};
-
-type SocialProfileState = {
-  user: SocialUser | null;
-  is_me: boolean;
-  is_friend: boolean;
-  outgoing_request_pending: boolean;
-  incoming_request_pending: boolean;
-  posts_count: number;
-  friends_count: number;
-  items: SocialPost[];
-  next_cursor: string | null;
-  loading: boolean;
-  loaded: boolean;
-  refreshing: boolean;
-  loadingMore: boolean;
-  error: string | null;
-};
-
-function SocialFeedSkeleton(props: { count?: number }) {
-  const rows = Array.from({ length: props.count ?? 3 }, (_, index) => index);
-  return (
-    <View style={styles.socialSkeletonList}>
-      {rows.map((row) => (
-        <AppCard key={`social-skeleton-${row}`} style={styles.socialPostCard}>
-          <View style={styles.socialSkeletonHeader}>
-            <View style={styles.socialSkeletonAvatar} />
-            <View style={styles.socialSkeletonHeaderCopy}>
-              <View style={styles.skeletonLineMd} />
-              <View style={styles.skeletonLineSm} />
-            </View>
-          </View>
-          <View style={styles.socialSkeletonMedia} />
-          <View style={styles.skeletonLineLg} />
-          <View style={styles.skeletonLineMd} />
-          <View style={styles.socialSkeletonActions}>
-            <View style={styles.socialSkeletonActionPill} />
-            <View style={styles.socialSkeletonActionPill} />
-            <View style={styles.socialSkeletonActionPill} />
-          </View>
-        </AppCard>
-      ))}
-    </View>
-  );
-}
-
-function EditableStringListField(props: {
-  label: string;
-  items: string[];
-  placeholder: string;
-  addLabel: string;
-  onChange: (items: string[]) => void;
-}) {
-  const updateItem = (index: number, value: string) => {
-    const next = [...props.items];
-    next[index] = value;
-    props.onChange(next);
-  };
-
-  const removeItem = (index: number) => {
-    if (props.items.length <= 1) {
-      props.onChange([""]);
-      return;
-    }
-    props.onChange(props.items.filter((_, itemIndex) => itemIndex !== index));
-  };
-
-  return (
-    <View style={styles.fieldWrap}>
-      <Text style={styles.fieldLabel}>{props.label}</Text>
-      <View style={styles.socialEditableList}>
-        {props.items.map((item, index) => (
-          <View key={`${props.label}-${index}`} style={styles.socialEditableRow}>
-            <TextInput
-              value={item}
-              onChangeText={(value) => updateItem(index, value)}
-              placeholder={props.placeholder}
-              style={[styles.input, styles.socialEditableInput]}
-            />
-            <Pressable style={styles.socialInlineRemoveBtn} onPress={() => removeItem(index)}>
-              <Text style={styles.socialInlineRemoveText}>Quitar</Text>
-            </Pressable>
-          </View>
-        ))}
-      </View>
-      <Pressable style={styles.socialInlineAddBtn} onPress={() => props.onChange([...props.items, ""])}>
-        <Text style={styles.socialInlineAddText}>{props.addLabel}</Text>
-      </Pressable>
-    </View>
-  );
-}
-
-function SocialPostCard(props: {
-  post: SocialPost;
-  onOpenProfile: (user: SocialUser) => void;
-  onToggleLike: (post: SocialPost) => void;
-  onOpenComments: (post: SocialPost) => void;
-  onShare: (post: SocialPost) => void;
-  onManagePost?: (post: SocialPost) => void;
-  canManage?: boolean;
-}) {
-  const { width } = useWindowDimensions();
-  const useDesktopLayout = isDesktopWebLayout(width);
-  const mediaViewportWidth = useDesktopLayout ? Math.min(width - 120, 700) : Math.max(280, width - 40);
-  const mediaHeight = useDesktopLayout ? 360 : 260;
-  const typeMeta = socialTypeMeta(props.post.type);
-  const [expandedCaption, setExpandedCaption] = useState(false);
-  const caption = props.post.caption?.trim() ?? "";
-  const showExpand = caption.length > 180;
-
-  return (
-    <AppCard style={[styles.socialPostCard, { borderColor: typeMeta.borderColor, backgroundColor: typeMeta.softBackground }]}>
-      <View style={styles.socialPostHeader}>
-        <Pressable style={styles.socialPostUserWrap} onPress={() => props.onOpenProfile(props.post.user)}>
-          <AvatarCircle letter={props.post.user.username} imageUrl={props.post.user.avatar_url} />
-          <View style={styles.socialPostUserCopy}>
-            <Text style={styles.socialPostUserName}>@{props.post.user.username}</Text>
-            <Text style={styles.socialPostMeta}>
-              {formatRelativeTime(props.post.created_at)} · {props.post.source === "friends" ? "Amigos" : props.post.source === "self" ? "Tú" : "Explorar"}
-            </Text>
-          </View>
-        </Pressable>
-        <View style={styles.socialPostHeaderRight}>
-          <View style={styles.socialPostBadges}>
-            <View style={[styles.socialTypeBadge, { backgroundColor: typeMeta.softBackground, borderColor: typeMeta.borderColor }]}>
-              <Text style={[styles.socialTypeBadgeText, { color: typeMeta.color }]}>{socialTypeLabel(props.post.type)}</Text>
-            </View>
-            <TagChip label={socialVisibilityLabel(props.post.visibility)} tone="default" />
-          </View>
-          {props.canManage && props.onManagePost ? (
-            <Pressable style={styles.socialPostManageButton} onPress={() => props.onManagePost?.(props.post)}>
-              <Text style={styles.socialPostManageButtonText}>⋯</Text>
-            </Pressable>
-          ) : null}
-        </View>
-      </View>
-
-      {props.post.media.length ? (
-        <ScrollView
-          horizontal
-          pagingEnabled
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.socialMediaCarousel}
-        >
-          {props.post.media.map((media) => (
-            <Image
-              key={`${props.post.id}-${media.id}`}
-              source={{ uri: media.media_url }}
-              style={[
-                styles.socialMediaImage,
-                {
-                  width: mediaViewportWidth,
-                  height: mediaHeight,
-                },
-              ]}
-            />
-          ))}
-        </ScrollView>
-      ) : null}
-
-      {caption ? (
-        <View style={styles.socialCaptionWrap}>
-          <Text style={styles.socialCaptionText} numberOfLines={expandedCaption ? undefined : 3}>
-            {caption}
-          </Text>
-          {showExpand ? (
-            <Pressable style={styles.socialCaptionToggle} onPress={() => setExpandedCaption((current) => !current)}>
-              <Text style={styles.socialCaptionToggleText}>{expandedCaption ? "Ver menos" : "Ver más"}</Text>
-            </Pressable>
-          ) : null}
-        </View>
-      ) : null}
-
-      {props.post.type === "recipe" && props.post.recipe ? (
-        <View style={styles.socialRecipeCard}>
-          <View style={styles.socialRecipeHeader}>
-            <Text style={styles.socialRecipeTitle}>{props.post.recipe.title}</Text>
-            <View style={styles.socialMiniMetaRow}>
-              {props.post.recipe.servings ? <TagChip label={`${props.post.recipe.servings} raciones`} tone="default" /> : null}
-              {props.post.recipe.prep_time_min ? <TagChip label={`${props.post.recipe.prep_time_min} min`} tone="default" /> : null}
-            </View>
-          </View>
-          {props.post.recipe.ingredients.length ? (
-            <View style={styles.socialRecipeListBlock}>
-              <Text style={styles.socialRecipeListTitle}>Ingredientes</Text>
-              {props.post.recipe.ingredients.slice(0, 4).map((ingredient, index) => (
-                <Text key={`ingredient-${props.post.id}-${index}`} style={styles.socialRecipeListText}>
-                  • {ingredient}
-                </Text>
-              ))}
-              {props.post.recipe.ingredients.length > 4 ? (
-                <Text style={styles.socialRecipeListMore}>+{props.post.recipe.ingredients.length - 4} más</Text>
-              ) : null}
-            </View>
-          ) : null}
-          {props.post.recipe.steps.length ? (
-            <View style={styles.socialRecipeListBlock}>
-              <Text style={styles.socialRecipeListTitle}>Pasos</Text>
-              {props.post.recipe.steps.slice(0, 2).map((step, index) => (
-                <Text key={`step-${props.post.id}-${index}`} style={styles.socialRecipeListText}>
-                  {index + 1}. {step}
-                </Text>
-              ))}
-            </View>
-          ) : null}
-          {props.post.recipe.nutrition_kcal != null &&
-          props.post.recipe.nutrition_protein_g != null &&
-          props.post.recipe.nutrition_carbs_g != null &&
-          props.post.recipe.nutrition_fat_g != null ? (
-            <View style={styles.socialRecipeMacroSummary}>
-              <AddQuantityMacroSummary
-                kcal={props.post.recipe.nutrition_kcal}
-                protein={props.post.recipe.nutrition_protein_g}
-                carbs={props.post.recipe.nutrition_carbs_g}
-                fats={props.post.recipe.nutrition_fat_g}
-              />
-            </View>
-          ) : null}
-        </View>
-      ) : null}
-
-      {props.post.type === "progress" && props.post.progress ? (
-        <View style={styles.socialProgressGrid}>
-          <MetricCard label="Peso" value={props.post.progress.weight_kg != null ? `${props.post.progress.weight_kg.toFixed(1)} kg` : "-"} />
-          <MetricCard label="IMC" value={props.post.progress.bmi != null ? props.post.progress.bmi.toFixed(1) : "-"} />
-          <MetricCard
-            label="% grasa"
-            value={props.post.progress.body_fat_pct != null ? `${props.post.progress.body_fat_pct.toFixed(1)}%` : "-"}
-          />
-          <MetricCard label="Visibilidad" value={socialVisibilityLabel(props.post.visibility)} />
-          {props.post.progress.notes ? (
-            <View style={styles.socialProgressNotes}>
-              <Text style={styles.socialProgressNotesText}>{props.post.progress.notes}</Text>
-            </View>
-          ) : null}
-        </View>
-      ) : null}
-
-      <View style={styles.socialActionRow}>
-        <Pressable style={styles.socialActionPill} onPress={() => props.onToggleLike(props.post)}>
-          <Text style={[styles.socialActionPillIcon, props.post.liked_by_me && styles.socialActionPillIconActive]}>♥</Text>
-          <Text style={styles.socialActionPillText}>{props.post.like_count}</Text>
-        </Pressable>
-        <Pressable style={styles.socialActionPill} onPress={() => props.onOpenComments(props.post)}>
-          <Text style={styles.socialActionPillIcon}>💬</Text>
-          <Text style={styles.socialActionPillText}>{props.post.comment_count}</Text>
-        </Pressable>
-        <Pressable style={styles.socialActionPill} onPress={() => props.onShare(props.post)}>
-          <Text style={styles.socialActionPillIcon}>↗</Text>
-          <Text style={styles.socialActionPillText}>Compartir</Text>
-        </Pressable>
-      </View>
-    </AppCard>
-  );
-}
-
 function SocialScreen() {
   const { width } = useWindowDimensions();
   const auth = useAuth();
+  const isWeb = Platform.OS === "web";
+  const router = useWebRouter();
   const useDesktopLayout = isDesktopWebLayout(width);
   const webMainScrollStyle = useMemo(() => webMainContentContainerStyle(width), [width]);
 
@@ -8357,7 +7736,8 @@ function SocialScreen() {
     [],
   );
 
-  const [segment, setSegment] = useState<SocialSegmentTab>("feed");
+  const initialSocialRoute = isWeb ? parseSocialRoute(router.path) : null;
+  const [segment, setSegment] = useState<SocialSegmentTab>(initialSocialRoute?.segment ?? "feed");
   const [feedSort, setFeedSort] = useState<SocialFeedSort>("relevance");
   const [feedTypeFilter, setFeedTypeFilter] = useState<SocialFeedTypeFilter>("all");
   const [feedFilterMenu, setFeedFilterMenu] = useState<null | "sort" | "type">(null);
@@ -8403,10 +7783,28 @@ function SocialScreen() {
   const [commentsItems, setCommentsItems] = useState<SocialComment[]>([]);
   const [commentDraft, setCommentDraft] = useState("");
   const [sendingComment, setSendingComment] = useState(false);
+  const lastNonProfileSegmentRef = useRef<SocialSegmentTab>(initialSocialRoute?.segment ?? "feed");
+  const resolvingProfileRouteRef = useRef<string | null>(null);
 
   const requestBadgeCount = socialOverview.incoming_requests.length;
   const activeFeedScope = segment === "explore" ? "explore" : "feed";
   const activeFeedState = activeFeedScope === "explore" ? exploreState : feedState;
+
+  const setSegmentWithNavigation = useCallback(
+    (nextSegment: SocialSegmentTab, options?: { replace?: boolean }) => {
+      if (!isWeb) {
+        setSegment(nextSegment);
+        return;
+      }
+      const nextPath = socialRouteForSegment(nextSegment);
+      if (options?.replace) {
+        router.replace(nextPath);
+        return;
+      }
+      router.navigate(nextPath);
+    },
+    [isWeb, router],
+  );
 
   const mergePosts = useCallback((current: SocialPost[], incoming: SocialPost[]): SocialPost[] => {
     const ordered: SocialPost[] = [];
@@ -8687,18 +8085,107 @@ function SocialScreen() {
     setSocialResults(items);
   }, [auth, segment, socialSearch]);
 
+  const findKnownSocialUser = useCallback(
+    (username: string): SocialUser | null => {
+      const normalized = username.trim().toLowerCase();
+      if (!normalized) {
+        return null;
+      }
+      const candidates: SocialUser[] = [
+        ...feedState.items.map((item) => item.user),
+        ...exploreState.items.map((item) => item.user),
+        ...socialOverview.friends,
+        ...socialOverview.incoming_requests.map((item) => item.user),
+        ...socialOverview.outgoing_requests.map((item) => item.user),
+        ...socialResults,
+        ...(selectedProfile ? [selectedProfile] : []),
+      ];
+      return candidates.find((item) => item.username.trim().toLowerCase() === normalized) ?? null;
+    },
+    [exploreState.items, feedState.items, selectedProfile, socialOverview.friends, socialOverview.incoming_requests, socialOverview.outgoing_requests, socialResults],
+  );
+
   const openProfile = useCallback(
     (user: SocialUser) => {
+      if (isWeb) {
+        router.navigate(socialProfileRoute(user.username));
+        return;
+      }
       setSelectedProfile(user);
       setProfileState(emptyProfileState());
     },
-    [emptyProfileState],
+    [emptyProfileState, isWeb, router],
   );
 
   const closeProfile = useCallback(() => {
+    if (isWeb) {
+      router.navigate(socialRouteForSegment(lastNonProfileSegmentRef.current), { replace: true });
+      return;
+    }
     setSelectedProfile(null);
     setProfileState(emptyProfileState());
-  }, [emptyProfileState]);
+  }, [emptyProfileState, isWeb, router]);
+
+  useEffect(() => {
+    if (!isWeb) {
+      return;
+    }
+    const parsed = parseSocialRoute(router.path);
+    if (!parsed) {
+      return;
+    }
+
+    if (!parsed.username) {
+      lastNonProfileSegmentRef.current = parsed.segment;
+      if (segment !== parsed.segment) {
+        setSegment(parsed.segment);
+      }
+      if (selectedProfile) {
+        setSelectedProfile(null);
+        setProfileState(emptyProfileState());
+      }
+      return;
+    }
+
+    const normalizedUsername = parsed.username.trim().toLowerCase();
+    if (!normalizedUsername) {
+      router.replace(socialRouteForSegment(lastNonProfileSegmentRef.current));
+      return;
+    }
+    if (selectedProfile?.username.trim().toLowerCase() === normalizedUsername) {
+      return;
+    }
+    if (resolvingProfileRouteRef.current === normalizedUsername) {
+      return;
+    }
+    const known = findKnownSocialUser(normalizedUsername);
+    if (known) {
+      setSelectedProfile(known);
+      setProfileState(emptyProfileState());
+      return;
+    }
+
+    resolvingProfileRouteRef.current = normalizedUsername;
+    void auth
+      .searchSocialUsers(normalizedUsername, 24)
+      .then((items) => {
+        const exact = items.find((item) => item.username.trim().toLowerCase() === normalizedUsername);
+        if (exact) {
+          setSelectedProfile(exact);
+          setProfileState(emptyProfileState());
+          return;
+        }
+        router.replace(socialRouteForSegment(lastNonProfileSegmentRef.current));
+      })
+      .catch(() => {
+        router.replace(socialRouteForSegment(lastNonProfileSegmentRef.current));
+      })
+      .finally(() => {
+        if (resolvingProfileRouteRef.current === normalizedUsername) {
+          resolvingProfileRouteRef.current = null;
+        }
+      });
+  }, [auth, emptyProfileState, findKnownSocialUser, isWeb, router, segment, selectedProfile]);
 
   const handleSendFriendRequest = useCallback(
     async (targetUserId: number) => {
@@ -8940,7 +8427,7 @@ function SocialScreen() {
       }
       closeComposer();
       resetComposer();
-      setSegment("feed");
+      setSegmentWithNavigation("feed", { replace: true });
       showAlert("Social", "Publicación compartida.");
     } catch (error) {
       showAlert("Social", parseApiError(error));
@@ -9095,7 +8582,7 @@ function SocialScreen() {
     const primaryText =
       post.type === "recipe" && post.recipe
         ? `${post.recipe.title}\n\n${post.caption ?? ""}`.trim()
-        : `${post.caption ?? socialTypeLabel(post.type)}\n\nCompartido desde NutriTracker`.trim();
+        : `${post.caption ?? socialTypeLabel(post.type)}\n\nCompartido desde NutrIA`.trim();
     try {
       await Share.share({
         message: primaryText,
@@ -9104,6 +8591,29 @@ function SocialScreen() {
       showAlert("Social", "No se pudo abrir el panel de compartir.");
     }
   }, []);
+
+  const socialUi = useMemo(
+    () => ({
+      styles,
+      theme,
+      AppHeader,
+      AppCard,
+      EmptyState,
+      SocialFeedSkeleton,
+      SocialPostCard,
+      SectionHeader,
+      TagChip,
+      AvatarCircle,
+      MetricCard,
+      ChoiceRow,
+      InputField,
+      TextInput,
+      EditableStringListField,
+      PrimaryButton,
+      SecondaryButton,
+    }),
+    [],
+  );
 
   const renderSegments = () => {
     const items: Array<{ value: SocialSegmentTab; label: string; badge?: number }> = [
@@ -9121,7 +8631,7 @@ function SocialScreen() {
             <Pressable
               key={item.value}
               style={[styles.socialSegmentChip, active && styles.socialSegmentChipActive]}
-              onPress={() => setSegment(item.value)}
+              onPress={() => setSegmentWithNavigation(item.value)}
             >
               <Text style={[styles.socialSegmentChipText, active && styles.socialSegmentChipTextActive]}>{item.label}</Text>
               {item.badge ? (
@@ -9245,626 +8755,190 @@ function SocialScreen() {
     );
   };
 
-  const renderFeedList = (scope: "feed" | "explore") => {
-    const state = scope === "feed" ? feedState : exploreState;
-    if (state.loading && !state.items.length) {
-      return (
-        <SafeAreaView style={styles.screen}>
-          <ScrollView contentContainerStyle={[styles.mainScroll, webMainScrollStyle, styles.socialMainContent]}>
-            <AppHeader
-              title="Social"
-              subtitle="Fotos, recetas, progreso y gente que también entrena en serio."
-              rightActionLabel="Crear"
-              onRightAction={() => openComposer("photo")}
-            />
-            {renderSegments()}
-            {renderFeedFilters()}
-            <SocialFeedSkeleton />
-          </ScrollView>
-        </SafeAreaView>
-      );
-    }
-
-    return (
-      <SafeAreaView style={styles.screen}>
-        <FlatList
-          data={state.items}
-          keyExtractor={(item) => item.id}
-          keyboardShouldPersistTaps="handled"
-          contentContainerStyle={[styles.mainScroll, webMainScrollStyle, styles.socialMainContent]}
-          refreshControl={<RefreshControl tintColor={theme.accent} refreshing={state.refreshing} onRefresh={() => void loadFeed(scope, "refresh")} />}
-          ListHeaderComponent={
-            <View>
-              <AppHeader
-                title="Social"
-                subtitle="Fotos, recetas, progreso y gente que también entrena en serio."
-                rightActionLabel="Crear"
-                onRightAction={() => openComposer("photo")}
-              />
-              {renderSegments()}
-              {renderFeedFilters()}
-              {state.error ? (
-                <AppCard style={styles.socialStatusCard}>
-                  <Text style={styles.emptyStateTitle}>No se pudo cargar el feed</Text>
-                  <Text style={styles.emptyStateSubtitle}>{state.error}</Text>
-                  <SecondaryButton title="Reintentar" onPress={() => void loadFeed(scope)} />
-                </AppCard>
-              ) : null}
-            </View>
-          }
-          ListEmptyComponent={
-            <EmptyState
-              title={scope === "feed" ? "Tu feed está tranquilo" : "Explorar todavía no tiene nada"}
-              subtitle={
-                scope === "feed"
-                  ? "Añade amigos o publica algo propio para que esto no parezca un solar premium."
-                  : "Cuando haya publicaciones públicas recientes aparecerán aquí."
-              }
-            />
-          }
-          renderItem={({ item }) => (
-            <SocialPostCard
-              post={item}
-              onOpenProfile={openProfile}
-              onToggleLike={(post) => void toggleLike(post)}
-              onOpenComments={(post) => void openComments(post)}
-              onShare={(post) => void handleShare(post)}
-              canManage={item.user.id === auth.user?.id}
-              onManagePost={(post) => void handleManagePost(post)}
-            />
-          )}
-          ListFooterComponent={
-            state.loadingMore ? (
-              <View style={styles.socialListFooter}>
-                <ActivityIndicator color={theme.accent} />
-              </View>
-            ) : null
-          }
-          onEndReachedThreshold={0.3}
-          onEndReached={() => {
-            if (state.nextCursor) {
-              void loadFeed(scope, "more");
-            }
-          }}
-        />
-      </SafeAreaView>
-    );
-  };
-
-  const renderUserRow = (user: SocialUser, right: React.ReactNode, key: string) => (
-    <View key={key} style={styles.socialDirectoryRow}>
-      <Pressable style={styles.socialDirectoryUserPressable} onPress={() => openProfile(user)}>
-        <AvatarCircle letter={user.username} imageUrl={user.avatar_url} />
-        <View style={styles.socialDirectoryCopy}>
-          <Text style={styles.socialUserName}>@{user.username}</Text>
-          <Text style={styles.helperText}>{user.email}</Text>
-        </View>
-      </Pressable>
-      <View style={styles.socialDirectoryRight}>{right}</View>
-    </View>
-  );
-
-  const renderFriendsAndRequests = () => (
-    <SafeAreaView style={styles.screen}>
-      <ScrollView contentContainerStyle={[styles.mainScroll, webMainScrollStyle, styles.socialMainContent]}>
-        <AppHeader
-          title="Social"
-          subtitle="Tu red, tus publicaciones y el nivel justo de cotilleo fitness."
-          rightActionLabel="Crear"
-          onRightAction={() => openComposer("photo")}
-        />
-        {renderSegments()}
-
-        {segment === "friends" ? (
-          <>
-            <AppCard>
-              <SectionHeader title="Buscar usuarios" subtitle="Por username o email" />
-              <InputField
-                label="Buscar usuarios"
-                value={socialSearch}
-                onChangeText={setSocialSearch}
-                autoCapitalize="none"
-                placeholder="username o email"
-              />
-              {searchingSocial ? <ActivityIndicator color={theme.accent} /> : null}
-              {socialSearch.trim().length >= 1 ? (
-                socialResults.length ? (
-                  <View style={styles.socialDirectoryList}>
-                    {socialResults.map((item) =>
-                      renderUserRow(
-                        item,
-                        item.friendship_status === "none" ? (
-                          <Pressable
-                            onPress={() => void handleSendFriendRequest(item.id)}
-                            style={[styles.socialActionButton, sendingFriendUserId === item.id && styles.socialActionButtonDisabled]}
-                            disabled={sendingFriendUserId === item.id}
-                          >
-                            <Text style={styles.socialActionButtonText}>
-                              {sendingFriendUserId === item.id ? "Enviando..." : "Añadir"}
-                            </Text>
-                          </Pressable>
-                        ) : item.friendship_status === "incoming_pending" && item.friendship_id ? (
-                          <Pressable
-                            onPress={() => void handleAcceptRequest(item.friendship_id as number)}
-                            style={[
-                              styles.socialActionButton,
-                              respondingFriendRequestId === item.friendship_id && styles.socialActionButtonDisabled,
-                            ]}
-                            disabled={respondingFriendRequestId === item.friendship_id}
-                          >
-                            <Text style={styles.socialActionButtonText}>Aceptar</Text>
-                          </Pressable>
-                        ) : (
-                          <TagChip
-                            label={
-                              item.friendship_status === "friends"
-                                ? "Amigos"
-                                : item.friendship_status === "outgoing_pending"
-                                  ? "Pendiente"
-                                  : "Solicitud recibida"
-                            }
-                            tone={item.friendship_status === "friends" ? "accent" : "default"}
-                          />
-                        ),
-                        `search-${item.id}`,
-                      ),
-                    )}
-                  </View>
-                ) : (
-                  <Text style={styles.helperText}>No hay usuarios que coincidan.</Text>
-                )
-              ) : (
-                <Text style={styles.helperText}>Empieza a escribir y buscará al vuelo.</Text>
-              )}
-            </AppCard>
-
-            <AppCard>
-              <SectionHeader title="Amigos" subtitle="Gente cuya actividad puedes seguir" />
-              {loadingOverview && !overviewLoaded ? <ActivityIndicator color={theme.accent} /> : null}
-              {socialOverview.friends.length ? (
-                <View style={styles.socialDirectoryList}>
-                  {socialOverview.friends.map((friend) =>
-                    renderUserRow(friend, <TagChip label="Amigo" tone="accent" />, `friend-${friend.id}`),
-                  )}
-                </View>
-              ) : (
-                <Text style={styles.helperText}>Todavía no tienes amigos añadidos.</Text>
-              )}
-            </AppCard>
-          </>
-        ) : (
-          <>
-            <AppCard>
-              <SectionHeader title="Solicitudes recibidas" subtitle="Acepta o rechaza" />
-              {loadingOverview && !overviewLoaded ? <ActivityIndicator color={theme.accent} /> : null}
-              {socialOverview.incoming_requests.length ? (
-                <View style={styles.socialDirectoryList}>
-                  {socialOverview.incoming_requests.map((requestItem) => (
-                    <View key={`incoming-${requestItem.id}`} style={styles.socialRequestCard}>
-                      <Pressable style={styles.socialDirectoryUserPressable} onPress={() => openProfile(requestItem.user)}>
-                        <AvatarCircle letter={requestItem.user.username} imageUrl={requestItem.user.avatar_url} />
-                        <View style={styles.socialDirectoryCopy}>
-                          <Text style={styles.socialUserName}>@{requestItem.user.username}</Text>
-                          <Text style={styles.helperText}>{requestItem.user.email}</Text>
-                        </View>
-                      </Pressable>
-                      <View style={styles.socialRequestActions}>
-                        <Pressable
-                          style={[
-                            styles.socialActionButton,
-                            respondingFriendRequestId === requestItem.id && styles.socialActionButtonDisabled,
-                          ]}
-                          onPress={() => void handleAcceptRequest(requestItem.id)}
-                          disabled={respondingFriendRequestId === requestItem.id}
-                        >
-                          <Text style={styles.socialActionButtonText}>Aceptar</Text>
-                        </Pressable>
-                        <Pressable
-                          style={[
-                            styles.secondaryButton,
-                            respondingFriendRequestId === requestItem.id && styles.socialActionButtonDisabled,
-                          ]}
-                          onPress={() => void handleRejectRequest(requestItem.id)}
-                          disabled={respondingFriendRequestId === requestItem.id}
-                        >
-                          <Text style={styles.secondaryButtonText}>Rechazar</Text>
-                        </Pressable>
-                      </View>
-                    </View>
-                  ))}
-                </View>
-              ) : (
-                <Text style={styles.helperText}>No tienes solicitudes pendientes.</Text>
-              )}
-            </AppCard>
-
-          </>
-        )}
-      </ScrollView>
-    </SafeAreaView>
-  );
-
-  const renderProfileView = () => {
-    if (!selectedProfile) {
-      return null;
-    }
-    if (profileState.loading && !profileState.items.length) {
-      return (
-        <SafeAreaView style={styles.screen}>
-          <ScrollView contentContainerStyle={[styles.mainScroll, webMainScrollStyle, styles.socialMainContent]}>
-            <AppHeader title={`@${selectedProfile.username}`} subtitle="Perfil social" onBack={closeProfile} />
-            <SocialFeedSkeleton count={2} />
-          </ScrollView>
-        </SafeAreaView>
-      );
-    }
-
-    return (
-      <SafeAreaView style={styles.screen}>
-        <FlatList
-          data={profileState.items}
-          keyExtractor={(item) => item.id}
-          keyboardShouldPersistTaps="handled"
-          contentContainerStyle={[styles.mainScroll, webMainScrollStyle, styles.socialMainContent]}
-          refreshControl={<RefreshControl tintColor={theme.accent} refreshing={profileState.refreshing} onRefresh={() => void loadProfile("refresh")} />}
-          ListHeaderComponent={
-            <View>
-              <AppHeader title={`@${profileState.user?.username ?? selectedProfile.username}`} subtitle="Perfil social" onBack={closeProfile} />
-              <AppCard style={styles.socialProfileHero}>
-                <View style={styles.socialProfileTopRow}>
-                  <View style={styles.socialProfileIdentity}>
-                    <AvatarCircle
-                      letter={profileState.user?.username ?? selectedProfile.username}
-                      imageUrl={profileState.user?.avatar_url ?? selectedProfile.avatar_url}
-                      size={68}
-                    />
-                    <View style={styles.socialProfileIdentityCopy}>
-                      <Text style={styles.socialProfileHandle}>@{profileState.user?.username ?? selectedProfile.username}</Text>
-                      <Text style={styles.helperText}>{profileState.user?.email ?? selectedProfile.email}</Text>
-                    </View>
-                  </View>
-                  {!profileState.is_me ? (
-                    profileState.is_friend ? (
-                      <TagChip label="Amigos" tone="accent" />
-                    ) : profileState.outgoing_request_pending ? (
-                      <TagChip label="Solicitud enviada" tone="default" />
-                    ) : profileState.incoming_request_pending ? (
-                      <Pressable
-                        style={[
-                          styles.socialActionButton,
-                          respondingFriendRequestId != null && styles.socialActionButtonDisabled,
-                        ]}
-                        onPress={() => {
-                          const requestId = socialOverview.incoming_requests.find((item) => item.user.id === selectedProfile.id)?.id;
-                          if (requestId) {
-                            void handleAcceptRequest(requestId);
-                          }
-                        }}
-                      >
-                        <Text style={styles.socialActionButtonText}>Aceptar amistad</Text>
-                      </Pressable>
-                    ) : (
-                      <Pressable
-                        style={[
-                          styles.socialActionButton,
-                          sendingFriendUserId === selectedProfile.id && styles.socialActionButtonDisabled,
-                        ]}
-                        onPress={() => void handleSendFriendRequest(selectedProfile.id)}
-                        disabled={sendingFriendUserId === selectedProfile.id}
-                      >
-                        <Text style={styles.socialActionButtonText}>
-                          {sendingFriendUserId === selectedProfile.id ? "Enviando..." : "Añadir amigo"}
-                        </Text>
-                      </Pressable>
-                    )
-                  ) : (
-                    <TagChip label="Tu perfil" tone="default" />
-                  )}
-                </View>
-                <View style={styles.socialProfileStatsRow}>
-                  <MetricCard label="Posts" value={String(profileState.posts_count)} />
-                  <MetricCard label="Amigos" value={String(profileState.friends_count)} />
-                  <MetricCard label="Acceso" value={profileState.is_me ? "Completo" : profileState.is_friend ? "Amigos" : "Público"} />
-                </View>
-              </AppCard>
-              {profileState.error ? (
-                <AppCard style={styles.socialStatusCard}>
-                  <Text style={styles.emptyStateTitle}>No se pudo cargar el perfil</Text>
-                  <Text style={styles.emptyStateSubtitle}>{profileState.error}</Text>
-                </AppCard>
-              ) : null}
-            </View>
-          }
-          ListEmptyComponent={<EmptyState title="Sin publicaciones" subtitle="Este perfil todavía no ha compartido nada que puedas ver." />}
-          renderItem={({ item }) => (
-            <SocialPostCard
-              post={item}
-              onOpenProfile={openProfile}
-              onToggleLike={(post) => void toggleLike(post)}
-              onOpenComments={(post) => void openComments(post)}
-              onShare={(post) => void handleShare(post)}
-              canManage={item.user.id === auth.user?.id}
-              onManagePost={(post) => void handleManagePost(post)}
-            />
-          )}
-          ListFooterComponent={
-            profileState.loadingMore ? (
-              <View style={styles.socialListFooter}>
-                <ActivityIndicator color={theme.accent} />
-              </View>
-            ) : null
-          }
-          onEndReachedThreshold={0.3}
-          onEndReached={() => {
-            if (profileState.next_cursor) {
-              void loadProfile("more");
-            }
-          }}
-        />
-      </SafeAreaView>
-    );
-  };
+  const feedSegmentsNode = renderSegments();
+  const feedFiltersNode = renderFeedFilters();
 
   if (selectedProfile) {
     return (
       <>
-        {renderProfileView()}
-        {commentsVisible ? (
-          <Modal transparent animationType="fade" visible onRequestClose={closeComments}>
-            <View style={styles.socialModalLayer}>
-              <Pressable style={styles.socialModalBackdrop} onPress={closeComments} />
-              <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.socialModalKeyboardWrap}>
-                <View style={[styles.socialModalCard, styles.socialCommentsModalCard]}>
-                  <Text style={styles.socialModalTitle}>Comentarios</Text>
-                  {commentsLoading ? (
-                    <ActivityIndicator color={theme.accent} />
-                  ) : (
-                    <ScrollView style={styles.socialCommentsList} contentContainerStyle={styles.socialCommentsListContent}>
-                      {commentsItems.length ? (
-                        commentsItems.map((comment) => (
-                          <View key={`comment-${comment.id}`} style={styles.socialCommentRow}>
-                            <AvatarCircle letter={comment.user.username} imageUrl={comment.user.avatar_url} />
-                            <View style={styles.socialCommentCopy}>
-                              <Text style={styles.socialCommentAuthor}>@{comment.user.username}</Text>
-                              <Text style={styles.socialCommentText}>{comment.text}</Text>
-                            </View>
-                          </View>
-                        ))
-                      ) : (
-                        <Text style={styles.helperText}>Todavía no hay comentarios.</Text>
-                      )}
-                    </ScrollView>
-                  )}
-                  <View style={styles.socialCommentComposer}>
-                    <TextInput
-                      value={commentDraft}
-                      onChangeText={setCommentDraft}
-                      placeholder="Escribe un comentario"
-                      style={[styles.input, styles.socialCommentInput]}
-                    />
-                    <PrimaryButton title={sendingComment ? "Enviando..." : "Enviar"} onPress={() => void submitComment()} disabled={!commentDraft.trim() || sendingComment} />
-                  </View>
-                </View>
-              </KeyboardAvoidingView>
-            </View>
-          </Modal>
-        ) : null}
+        <ProfileView
+          ui={socialUi}
+          webMainScrollStyle={webMainScrollStyle}
+          profileState={profileState}
+          selectedProfile={selectedProfile}
+          socialOverview={socialOverview}
+          authUserId={auth.user?.id}
+          sendingFriendUserId={sendingFriendUserId}
+          respondingFriendRequestId={respondingFriendRequestId}
+          onBack={closeProfile}
+          onRefresh={() => void loadProfile("refresh")}
+          onLoadMore={() => void loadProfile("more")}
+          onOpenProfile={openProfile}
+          onToggleLike={(post) => void toggleLike(post)}
+          onOpenComments={(post) => void openComments(post)}
+          onShare={(post) => void handleShare(post)}
+          onManagePost={(post) => void handleManagePost(post)}
+          onSendFriendRequest={(userId) => void handleSendFriendRequest(userId)}
+          onAcceptRequest={(requestId) => void handleAcceptRequest(requestId)}
+        />
+        <Comments
+          ui={socialUi}
+          visible={commentsVisible}
+          loading={commentsLoading}
+          items={commentsItems}
+          draft={commentDraft}
+          sending={sendingComment}
+          onClose={closeComments}
+          onChangeDraft={setCommentDraft}
+          onSubmit={() => void submitComment()}
+        />
       </>
     );
   }
 
   return (
     <>
-      {segment === "feed" ? renderFeedList("feed") : segment === "explore" ? renderFeedList("explore") : renderFriendsAndRequests()}
+      {segment === "feed" ? (
+        <FeedView
+          scope="feed"
+          state={feedState}
+          ui={socialUi}
+          webMainScrollStyle={webMainScrollStyle}
+          authUserId={auth.user?.id}
+          segmentsNode={feedSegmentsNode}
+          filtersNode={feedFiltersNode}
+          onCreate={(type) => openComposer(type ?? "photo")}
+          onRefresh={() => void loadFeed("feed", "refresh")}
+          onRetry={() => void loadFeed("feed")}
+          onLoadMore={() => void loadFeed("feed", "more")}
+          onOpenProfile={openProfile}
+          onToggleLike={(post) => void toggleLike(post)}
+          onOpenComments={(post) => void openComments(post)}
+          onShare={(post) => void handleShare(post)}
+          onManagePost={(post) => void handleManagePost(post)}
+        />
+      ) : segment === "explore" ? (
+        <ExploreView
+          state={exploreState}
+          ui={socialUi}
+          webMainScrollStyle={webMainScrollStyle}
+          authUserId={auth.user?.id}
+          segmentsNode={feedSegmentsNode}
+          filtersNode={feedFiltersNode}
+          onCreate={(type) => openComposer(type ?? "photo")}
+          onRefresh={() => void loadFeed("explore", "refresh")}
+          onRetry={() => void loadFeed("explore")}
+          onLoadMore={() => void loadFeed("explore", "more")}
+          onOpenProfile={openProfile}
+          onToggleLike={(post) => void toggleLike(post)}
+          onOpenComments={(post) => void openComments(post)}
+          onShare={(post) => void handleShare(post)}
+          onManagePost={(post) => void handleManagePost(post)}
+        />
+      ) : segment === "friends" ? (
+        <FriendsView
+          ui={socialUi}
+          webMainScrollStyle={webMainScrollStyle}
+          socialSearch={socialSearch}
+          socialResults={socialResults}
+          searchingSocial={searchingSocial}
+          socialOverview={socialOverview}
+          loadingOverview={loadingOverview}
+          overviewLoaded={overviewLoaded}
+          sendingFriendUserId={sendingFriendUserId}
+          respondingFriendRequestId={respondingFriendRequestId}
+          segmentsNode={feedSegmentsNode}
+          onCreate={(type) => openComposer(type ?? "photo")}
+          onChangeSearch={setSocialSearch}
+          onOpenProfile={openProfile}
+          onSendFriendRequest={(userId) => void handleSendFriendRequest(userId)}
+          onAcceptRequest={(requestId) => void handleAcceptRequest(requestId)}
+        />
+      ) : (
+        <RequestsView
+          ui={socialUi}
+          webMainScrollStyle={webMainScrollStyle}
+          socialOverview={socialOverview}
+          loadingOverview={loadingOverview}
+          overviewLoaded={overviewLoaded}
+          respondingFriendRequestId={respondingFriendRequestId}
+          segmentsNode={feedSegmentsNode}
+          onCreate={(type) => openComposer(type ?? "photo")}
+          onOpenProfile={openProfile}
+          onAcceptRequest={(requestId) => void handleAcceptRequest(requestId)}
+          onRejectRequest={(requestId) => void handleRejectRequest(requestId)}
+        />
+      )}
       {renderFeedFilterModal()}
-
-      {composerVisible ? (
-        <Modal transparent animationType="fade" visible onRequestClose={closeComposer}>
-          <View style={styles.socialModalLayer}>
-            <Pressable style={styles.socialModalBackdrop} onPress={closeComposer} />
-            <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.socialModalKeyboardWrap}>
-              <ScrollView contentContainerStyle={styles.socialComposerScrollContent}>
-                <View style={styles.socialModalCard}>
-                  <Text style={styles.socialModalTitle}>Crear publicación</Text>
-                  <ChoiceRow
-                    label="Tipo"
-                    value={composerType}
-                    onChange={(value) => {
-                      setComposerType(value);
-                      if (value === "progress") {
-                        setComposerVisibility("friends");
-                      }
-                    }}
-                    options={[
-                      { label: "Foto", value: "photo" },
-                      { label: "Receta", value: "recipe" },
-                      { label: "Progreso", value: "progress" },
-                    ]}
-                  />
-                  <ChoiceRow
-                    label="Visibilidad"
-                    value={composerVisibility}
-                    onChange={setComposerVisibility}
-                    options={[
-                      { label: "Amigos", value: "friends" },
-                      { label: "Pública", value: "public" },
-                      { label: "Privada", value: "private" },
-                    ]}
-                  />
-                  <View style={styles.fieldWrap}>
-                    <Text style={styles.fieldLabel}>Caption</Text>
-                    <TextInput
-                      value={composerCaption}
-                      onChangeText={setComposerCaption}
-                      placeholder="Qué quieres contar"
-                      multiline
-                      textAlignVertical="top"
-                      style={[styles.input, styles.socialComposerTextarea]}
-                    />
-                  </View>
-
-                  <View style={styles.fieldWrap}>
-                    <Text style={styles.fieldLabel}>Fotos</Text>
-                    <View style={styles.socialPhotoControls}>
-                      <SecondaryButton title="Galería" onPress={() => void pickComposerPhotosFromLibrary()} />
-                      <SecondaryButton title="Cámara" onPress={() => void pickComposerPhotoFromCamera()} />
-                    </View>
-                    {composerPhotos.length ? (
-                      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.socialComposerPhotoStrip}>
-                        {composerPhotos.map((uri, index) => (
-                          <View key={`composer-photo-${index}`} style={styles.socialComposerPhotoItem}>
-                            <Image source={{ uri }} style={styles.socialComposerPhotoThumb} />
-                            <Pressable
-                              style={styles.socialComposerPhotoRemove}
-                              onPress={() => setComposerPhotos((current) => current.filter((_, itemIndex) => itemIndex !== index))}
-                            >
-                              <Text style={styles.socialComposerPhotoRemoveText}>×</Text>
-                            </Pressable>
-                          </View>
-                        ))}
-                      </ScrollView>
-                    ) : (
-                      <Text style={styles.helperText}>Hasta 3 fotos por publicación.</Text>
-                    )}
-                  </View>
-
-                  {composerType === "recipe" ? (
-                    <>
-                      <InputField label="Título" value={composerRecipeTitle} onChangeText={setComposerRecipeTitle} placeholder="Bowl post-entreno" />
-                      <View style={styles.socialRecipeComposerGrid}>
-                        <InputField
-                          label="Raciones"
-                          value={composerRecipeServings}
-                          onChangeText={setComposerRecipeServings}
-                          keyboardType="numeric"
-                          placeholder="2"
-                        />
-                        <InputField
-                          label="Tiempo (min)"
-                          value={composerRecipePrepTime}
-                          onChangeText={setComposerRecipePrepTime}
-                          keyboardType="numeric"
-                          placeholder="15"
-                        />
-                      </View>
-                      <EditableStringListField
-                        label="Ingredientes"
-                        items={composerRecipeIngredients}
-                        placeholder="200 g yogur, 30 g avena..."
-                        addLabel="Añadir ingrediente"
-                        onChange={setComposerRecipeIngredients}
-                      />
-                      <EditableStringListField
-                        label="Pasos"
-                        items={composerRecipeSteps}
-                        placeholder="Mezcla, hornea, sirve..."
-                        addLabel="Añadir paso"
-                        onChange={setComposerRecipeSteps}
-                      />
-                      <InputField
-                        label="Tags"
-                        value={composerRecipeTags}
-                        onChangeText={setComposerRecipeTags}
-                        placeholder="high_protein, easy, breakfast"
-                      />
-                      <View style={styles.socialRecipeComposerGrid}>
-                        <InputField label="Kcal" value={composerRecipeKcal} onChangeText={setComposerRecipeKcal} keyboardType="numeric" placeholder="520" />
-                        <InputField label="Proteína" value={composerRecipeProtein} onChangeText={setComposerRecipeProtein} keyboardType="numeric" placeholder="38" />
-                        <InputField label="Carbs" value={composerRecipeCarbs} onChangeText={setComposerRecipeCarbs} keyboardType="numeric" placeholder="44" />
-                        <InputField label="Grasas" value={composerRecipeFat} onChangeText={setComposerRecipeFat} keyboardType="numeric" placeholder="16" />
-                      </View>
-                    </>
-                  ) : null}
-
-                  {composerType === "progress" ? (
-                    <>
-                      <View style={styles.socialRecipeComposerGrid}>
-                        <InputField
-                          label="Peso actual"
-                          value={composerProgressWeight}
-                          onChangeText={setComposerProgressWeight}
-                          keyboardType="numeric"
-                          placeholder="78.5"
-                        />
-                        <InputField
-                          label="% grasa"
-                          value={composerProgressBodyFat}
-                          onChangeText={setComposerProgressBodyFat}
-                          keyboardType="numeric"
-                          placeholder="14.2"
-                        />
-                        <InputField label="IMC" value={composerProgressBmi} onChangeText={setComposerProgressBmi} keyboardType="numeric" placeholder="24.1" />
-                      </View>
-                      <View style={styles.fieldWrap}>
-                        <Text style={styles.fieldLabel}>Notas</Text>
-                        <TextInput
-                          value={composerProgressNotes}
-                          onChangeText={setComposerProgressNotes}
-                          placeholder="Qué ha cambiado esta semana"
-                          multiline
-                          textAlignVertical="top"
-                          style={[styles.input, styles.socialComposerTextarea]}
-                        />
-                      </View>
-                    </>
-                  ) : null}
-
-                  <View style={styles.socialComposerActions}>
-                    <SecondaryButton title="Cancelar" onPress={closeComposer} />
-                    <PrimaryButton title={publishingPost ? "Publicando..." : "Publicar"} onPress={() => void handlePublishPost()} loading={publishingPost} />
-                  </View>
-                </View>
-              </ScrollView>
-            </KeyboardAvoidingView>
-          </View>
-        </Modal>
-      ) : null}
-
-      {commentsVisible ? (
-        <Modal transparent animationType="fade" visible onRequestClose={closeComments}>
-          <View style={styles.socialModalLayer}>
-            <Pressable style={styles.socialModalBackdrop} onPress={closeComments} />
-            <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.socialModalKeyboardWrap}>
-              <View style={[styles.socialModalCard, styles.socialCommentsModalCard]}>
-                <Text style={styles.socialModalTitle}>Comentarios</Text>
-                {commentsLoading ? (
-                  <ActivityIndicator color={theme.accent} />
-                ) : (
-                  <ScrollView style={styles.socialCommentsList} contentContainerStyle={styles.socialCommentsListContent}>
-                    {commentsItems.length ? (
-                      commentsItems.map((comment) => (
-                        <View key={`comment-${comment.id}`} style={styles.socialCommentRow}>
-                          <AvatarCircle letter={comment.user.username} imageUrl={comment.user.avatar_url} />
-                          <View style={styles.socialCommentCopy}>
-                            <Text style={styles.socialCommentAuthor}>@{comment.user.username}</Text>
-                            <Text style={styles.socialCommentText}>{comment.text}</Text>
-                          </View>
-                        </View>
-                      ))
-                    ) : (
-                      <Text style={styles.helperText}>Todavía no hay comentarios.</Text>
-                    )}
-                  </ScrollView>
-                )}
-                <View style={styles.socialCommentComposer}>
-                  <TextInput
-                    value={commentDraft}
-                    onChangeText={setCommentDraft}
-                    placeholder="Escribe un comentario"
-                    style={[styles.input, styles.socialCommentInput]}
-                  />
-                  <PrimaryButton title={sendingComment ? "Enviando..." : "Enviar"} onPress={() => void submitComment()} disabled={!commentDraft.trim() || sendingComment} />
-                </View>
-              </View>
-            </KeyboardAvoidingView>
-          </View>
-        </Modal>
-      ) : null}
+      <Composer
+        ui={socialUi}
+        visible={composerVisible}
+        publishing={publishingPost}
+        composerType={composerType}
+        composerVisibility={composerVisibility}
+        composerCaption={composerCaption}
+        composerPhotos={composerPhotos}
+        composerRecipeTitle={composerRecipeTitle}
+        composerRecipeServings={composerRecipeServings}
+        composerRecipePrepTime={composerRecipePrepTime}
+        composerRecipeIngredients={composerRecipeIngredients}
+        composerRecipeSteps={composerRecipeSteps}
+        composerRecipeTags={composerRecipeTags}
+        composerRecipeKcal={composerRecipeKcal}
+        composerRecipeProtein={composerRecipeProtein}
+        composerRecipeCarbs={composerRecipeCarbs}
+        composerRecipeFat={composerRecipeFat}
+        composerProgressWeight={composerProgressWeight}
+        composerProgressBodyFat={composerProgressBodyFat}
+        composerProgressBmi={composerProgressBmi}
+        composerProgressNotes={composerProgressNotes}
+        onClose={closeComposer}
+        onPublish={() => void handlePublishPost()}
+        onSetType={setComposerType}
+        onSetVisibility={setComposerVisibility}
+        onSetCaption={setComposerCaption}
+        onPickLibrary={() => void pickComposerPhotosFromLibrary()}
+        onPickCamera={() => void pickComposerPhotoFromCamera()}
+        onRemovePhoto={(index) => setComposerPhotos((current) => current.filter((_, itemIndex) => itemIndex !== index))}
+        onSetRecipeTitle={setComposerRecipeTitle}
+        onSetRecipeServings={setComposerRecipeServings}
+        onSetRecipePrepTime={setComposerRecipePrepTime}
+        onSetRecipeIngredients={setComposerRecipeIngredients}
+        onSetRecipeSteps={setComposerRecipeSteps}
+        onSetRecipeTags={setComposerRecipeTags}
+        onSetRecipeKcal={setComposerRecipeKcal}
+        onSetRecipeProtein={setComposerRecipeProtein}
+        onSetRecipeCarbs={setComposerRecipeCarbs}
+        onSetRecipeFat={setComposerRecipeFat}
+        onSetProgressWeight={setComposerProgressWeight}
+        onSetProgressBodyFat={setComposerProgressBodyFat}
+        onSetProgressBmi={setComposerProgressBmi}
+        onSetProgressNotes={setComposerProgressNotes}
+      />
+      <Comments
+        ui={socialUi}
+        visible={commentsVisible}
+        loading={commentsLoading}
+        items={commentsItems}
+        draft={commentDraft}
+        sending={sendingComment}
+        onClose={closeComments}
+        onChangeDraft={setCommentDraft}
+        onSubmit={() => void submitComment()}
+      />
     </>
   );
 }
 
-function SettingsScreen({ isActive }: { isActive: boolean }) {
+function SettingsScreen({
+  isActive,
+  focusSection,
+  onFocusSectionHandled,
+}: {
+  isActive: boolean;
+  focusSection?: "profile" | null;
+  onFocusSectionHandled?: () => void;
+}) {
   const { width } = useWindowDimensions();
   const auth = useAuth();
   const useDesktopLayout = isDesktopWebLayout(width);
@@ -9984,6 +9058,19 @@ function SettingsScreen({ isActive }: { isActive: boolean }) {
     }
     void loadMeta();
   }, [isActive, loadMeta]);
+
+  useEffect(() => {
+    if (!isActive || !focusSection) {
+      return;
+    }
+    if (focusSection === "profile") {
+      setOpenSections((current) => ({
+        ...current,
+        profile: true,
+      }));
+    }
+    onFocusSectionHandled?.();
+  }, [focusSection, isActive, onFocusSectionHandled]);
 
   const toggleSection = (section: keyof typeof openSections) => {
     setOpenSections((current) => ({ ...current, [section]: !current[section] }));
@@ -10155,7 +9242,7 @@ function SettingsScreen({ isActive }: { isActive: boolean }) {
 
       await Share.share({
         message: [
-          tx("Resumen semanal Nutri Tracker"),
+          tx("Resumen semanal NutrIA"),
           tx("Kcal promedio: {{avgKcal}}", { avgKcal: avgKcal.toFixed(0) }),
           tx("Proteína promedio: {{avgProtein}} g", { avgProtein: avgProtein.toFixed(1) }),
           tx("Agua promedio: {{avgWater}} ml", { avgWater: avgWater.toFixed(0) }),
@@ -14807,16 +13894,17 @@ function QuickAddCard(props: { action: QuickAddAction; title: string; subtitle: 
 function MainAppTabs() {
   const { width } = useWindowDimensions();
   const auth = useAuth();
-  const { language, setLanguage } = useI18n();
   const isWeb = Platform.OS === "web";
-  const [tab, setTab] = useState<MainTab>("dashboard");
+  const router = useWebRouter();
+  const initialTab = isWeb ? tabFromAppRoute(router.path) : "dashboard";
+  const [tab, setTab] = useState<MainTab>(initialTab);
   const [visitedTabs, setVisitedTabs] = useState<Record<MainTab, boolean>>({
-    dashboard: true,
-    body: false,
+    dashboard: initialTab === "dashboard",
+    body: initialTab === "body",
     add: false,
-    social: false,
-    history: false,
-    settings: false,
+    social: initialTab === "social",
+    history: initialTab === "history",
+    settings: initialTab === "settings",
   });
   const [quickAddOpen, setQuickAddOpen] = useState(false);
   const [quickAddVisible, setQuickAddVisible] = useState(false);
@@ -14826,12 +13914,12 @@ function MainAppTabs() {
   const [transitionFromTab, setTransitionFromTab] = useState<MainTab | null>(null);
   const [tabTransitioning, setTabTransitioning] = useState(false);
   const [launchAction, setLaunchAction] = useState<AddLaunchAction | null>(null);
-  const [webHoveredTab, setWebHoveredTab] = useState<MainTab | null>(null);
   const [webAccountMenuOpen, setWebAccountMenuOpen] = useState(false);
   const [webAccountMenuVisible, setWebAccountMenuVisible] = useState(false);
   const [avatarSourceSheetOpen, setAvatarSourceSheetOpen] = useState(false);
   const [avatarSourceSheetVisible, setAvatarSourceSheetVisible] = useState(false);
   const [uploadingWebAvatar, setUploadingWebAvatar] = useState(false);
+  const [settingsFocusSection, setSettingsFocusSection] = useState<"profile" | null>(null);
   const quickAddAnim = useRef(new Animated.Value(0)).current;
   const tabBarAnim = useRef(new Animated.Value(1)).current;
   const webAccountMenuAnim = useRef(new Animated.Value(0)).current;
@@ -14845,7 +13933,7 @@ function MainAppTabs() {
     settings: new Animated.Value(0),
   });
   const tabSwitchingRef = useRef(false);
-  const activeTabRef = useRef<MainTab>("dashboard");
+  const activeTabRef = useRef<MainTab>(initialTab);
   const shouldHideAddTrigger = tab === "add" && (hideTabBarForOverlay || hideTabBarForScanCamera || hideTabBarForMealQuestions);
   const shouldHideTabBar = !isWeb && shouldHideAddTrigger;
   const useDesktopLayout = isDesktopWebLayout(width);
@@ -14877,7 +13965,7 @@ function MainAppTabs() {
     { value: "history", label: "Historial" },
     { value: "settings", label: "Ajustes" },
   ];
-  const webTabs: Array<{ value: MainTab; label: string }> = [
+  const webTabs: Array<{ value: Exclude<MainTab, "add">; label: string }> = [
     { value: "dashboard", label: "Panel" },
     { value: "body", label: "Body" },
     { value: "social", label: "Social" },
@@ -14956,6 +14044,22 @@ function MainAppTabs() {
       });
     },
     [setSceneVisibilityInstant],
+  );
+
+  const navigateToTabRoute = useCallback(
+    (nextTab: Exclude<MainTab, "add">, options?: { replace?: boolean }) => {
+      if (!isWeb) {
+        setTabWithFade(nextTab);
+        return;
+      }
+      const nextPath = appRouteForTab(nextTab);
+      if (options?.replace) {
+        router.replace(nextPath);
+        return;
+      }
+      router.navigate(nextPath);
+    },
+    [isWeb, router, setTabWithFade],
   );
 
   const openQuickAdd = useCallback(() => {
@@ -15156,6 +14260,24 @@ function MainAppTabs() {
 
   const webProfileName = auth.user?.username?.trim() || auth.user?.email?.split("@")[0] || "Usuario";
   const webProfileInitial = webProfileName.slice(0, 1).toUpperCase();
+  const openMySocialProfile = useCallback(() => {
+    const username = auth.user?.username?.trim();
+    closeQuickAdd(() => {
+      if (isWeb && username) {
+        router.navigate(socialProfileRoute(username));
+        return;
+      }
+      navigateToTabRoute("social");
+    });
+  }, [auth.user?.username, closeQuickAdd, isWeb, navigateToTabRoute, router]);
+  const openSettingsHome = useCallback(() => {
+    setSettingsFocusSection(null);
+    closeQuickAdd(() => navigateToTabRoute("settings"));
+  }, [closeQuickAdd, navigateToTabRoute]);
+  const openProfileEditor = useCallback(() => {
+    setSettingsFocusSection("profile");
+    closeQuickAdd(() => navigateToTabRoute("settings"));
+  }, [closeQuickAdd, navigateToTabRoute]);
 
   const quickAddSheetTranslate = quickAddAnim.interpolate({
     inputRange: [0, 1],
@@ -15232,6 +14354,17 @@ function MainAppTabs() {
   }, [tab]);
 
   useEffect(() => {
+    if (!isWeb) {
+      return;
+    }
+    const nextTab = tabFromAppRoute(router.path);
+    if (nextTab === activeTabRef.current) {
+      return;
+    }
+    setTabWithFade(nextTab);
+  }, [isWeb, router.path, setTabWithFade]);
+
+  useEffect(() => {
     if (!isWeb || !quickAddOpen || !webAccountMenuOpen) {
       return;
     }
@@ -15245,194 +14378,191 @@ function MainAppTabs() {
     closeWebAccountMenu();
   }, [avatarSourceSheetOpen, closeWebAccountMenu, isWeb, webAccountMenuOpen]);
 
+  const tabScenes = (
+    <View style={styles.flex1}>
+      <Animated.View
+        pointerEvents={tab === "dashboard" && !tabTransitioning ? "auto" : "none"}
+        style={[
+          styles.tabScene,
+          isWeb && styles.tabSceneWebOffset,
+          {
+            opacity: sceneOpacityRef.current.dashboard,
+            zIndex: tab === "dashboard" ? 3 : transitionFromTab === "dashboard" ? 2 : 1,
+          },
+        ]}
+      >
+        {visitedTabs.dashboard ? <DashboardScreen isActive={tab === "dashboard"} onOpenBodyProgress={() => navigateToTabRoute("body")} /> : null}
+      </Animated.View>
+      <Animated.View
+        pointerEvents={tab === "add" && !tabTransitioning ? "auto" : "none"}
+        style={[
+          styles.tabScene,
+          isWeb && styles.tabSceneWebOffset,
+          {
+            opacity: sceneOpacityRef.current.add,
+            zIndex: tab === "add" ? 3 : transitionFromTab === "add" ? 2 : 1,
+          },
+        ]}
+      >
+        {visitedTabs.add ? (
+          <AddScreen
+            isActive={tab === "add"}
+            launchAction={launchAction}
+            onLaunchActionHandled={(requestId) => {
+              setLaunchAction((current) => {
+                if (!current || current.requestId !== requestId) {
+                  return current;
+                }
+                return null;
+              });
+            }}
+            onIntakeSaved={() => navigateToTabRoute("dashboard")}
+            onMealSourceSheetVisibilityChange={setHideTabBarForOverlay}
+            onScanCameraVisibilityChange={setHideTabBarForScanCamera}
+            onMealQuestionsVisibilityChange={setHideTabBarForMealQuestions}
+            onBackToPanel={() => navigateToTabRoute("dashboard")}
+          />
+        ) : null}
+      </Animated.View>
+      <Animated.View
+        pointerEvents={tab === "body" && !tabTransitioning ? "auto" : "none"}
+        style={[
+          styles.tabScene,
+          isWeb && styles.tabSceneWebOffset,
+          {
+            opacity: sceneOpacityRef.current.body,
+            zIndex: tab === "body" ? 3 : transitionFromTab === "body" ? 2 : 1,
+          },
+        ]}
+      >
+        {visitedTabs.body ? <BodyProgressScreen /> : null}
+      </Animated.View>
+      <Animated.View
+        pointerEvents={tab === "history" && !tabTransitioning ? "auto" : "none"}
+        style={[
+          styles.tabScene,
+          isWeb && styles.tabSceneWebOffset,
+          {
+            opacity: sceneOpacityRef.current.history,
+            zIndex: tab === "history" ? 3 : transitionFromTab === "history" ? 2 : 1,
+          },
+        ]}
+      >
+        {visitedTabs.history ? <HistoryScreen isActive={tab === "history"} /> : null}
+      </Animated.View>
+      <Animated.View
+        pointerEvents={tab === "social" && !tabTransitioning ? "auto" : "none"}
+        style={[
+          styles.tabScene,
+          isWeb && styles.tabSceneWebOffset,
+          {
+            opacity: sceneOpacityRef.current.social,
+            zIndex: tab === "social" ? 3 : transitionFromTab === "social" ? 2 : 1,
+          },
+        ]}
+      >
+        {visitedTabs.social ? <SocialScreen /> : null}
+      </Animated.View>
+      <Animated.View
+        pointerEvents={tab === "settings" && !tabTransitioning ? "auto" : "none"}
+        style={[
+          styles.tabScene,
+          isWeb && styles.tabSceneWebOffset,
+          {
+            opacity: sceneOpacityRef.current.settings,
+            zIndex: tab === "settings" ? 3 : transitionFromTab === "settings" ? 2 : 1,
+          },
+        ]}
+      >
+        {visitedTabs.settings ? (
+          <SettingsScreen
+            isActive={tab === "settings"}
+            focusSection={tab === "settings" ? settingsFocusSection : null}
+            onFocusSectionHandled={() => setSettingsFocusSection(null)}
+          />
+        ) : null}
+      </Animated.View>
+    </View>
+  );
+
   return (
     <SafeAreaView style={styles.screen}>
       {isWeb ? (
-        <View style={styles.webTopShell}>
-          <View style={styles.webTopBar}>
-            <Pressable
-              style={({ pressed }) => [styles.webBrandButton, pressed && styles.webBrandButtonPressed]}
-              onPress={() => closeQuickAdd(() => setTabWithFade("dashboard"))}
-            >
-              <Text style={styles.webBrandText}>NutriTracker</Text>
-            </Pressable>
-            <View style={styles.authWebTopControls}>
-              <View style={styles.authWebLanguageSwitch}>
-                {[
-                  { value: "es" as const, flag: "🇪🇸", label: "ES" },
-                  { value: "en" as const, flag: "🇬🇧", label: "EN" },
-                ].map((option) => (
-                  <Pressable
-                    key={option.value}
-                    onPress={() => {
-                      void setLanguage(option.value);
-                    }}
-                    style={({ pressed }) => [
-                      styles.authWebLanguageOption,
-                      language === option.value && styles.authWebLanguageOptionActive,
-                      pressed && styles.authWebLanguageOptionPressed,
-                    ]}
-                  >
-                    <Text style={styles.authWebLanguageFlag}>{option.flag}</Text>
-                    <Text style={[styles.authWebLanguageCode, language === option.value && styles.authWebLanguageCodeActive]}>
-                      {option.label}
-                    </Text>
-                  </Pressable>
-                ))}
-              </View>
-              <Pressable
-                hitSlop={10}
-                style={({ pressed }) => [styles.webProfileButton, pressed && styles.webProfileButtonPressed]}
-                onPress={toggleWebAccountMenu}
-              >
-                <View style={styles.webProfileAvatar}>
-                  {auth.user?.avatar_url ? (
-                    <Image source={{ uri: auth.user.avatar_url }} style={styles.webProfileAvatarImage} />
-                  ) : (
-                    <Text style={styles.webProfileAvatarText}>{webProfileInitial}</Text>
-                  )}
-                </View>
-              </Pressable>
-            </View>
-          </View>
-          <View style={styles.webNavBar}>
-            <View style={styles.webNavTabsRow}>
-              {webTabs.map(({ value, label }) => {
-                const active = tab === value;
-                return (
-                  <Pressable
-                    key={value}
-                    onHoverIn={() => {
-                      setWebHoveredTab(value);
-                    }}
-                    onHoverOut={() => {
-                      setWebHoveredTab((current) => (current === value ? null : current));
-                    }}
-                    onPress={() => {
-                      closeWebAccountMenu();
-                      closeQuickAdd(() => setTabWithFade(value));
-                    }}
-                    style={({ pressed }) => [
-                      styles.webNavTab,
-                      active && styles.webNavTabActive,
-                      webHoveredTab === value && styles.webNavTabHover,
-                      pressed && styles.webNavTabPressed,
-                    ]}
-                  >
-                    <Text
-                      style={[
-                        styles.webNavTabText,
-                        webHoveredTab === value && !active && styles.webNavTabTextHover,
-                        active && styles.webNavTabTextActive,
-                      ]}
-                    >
-                      {label}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-          </View>
-        </View>
-      ) : null}
-      <View style={styles.flex1}>
-        <Animated.View
-          pointerEvents={tab === "dashboard" && !tabTransitioning ? "auto" : "none"}
-          style={[
-            styles.tabScene,
-            isWeb && styles.tabSceneWebOffset,
-            {
-              opacity: sceneOpacityRef.current.dashboard,
-              zIndex: tab === "dashboard" ? 3 : transitionFromTab === "dashboard" ? 2 : 1,
+        <AppLayout
+          onHome={() => closeQuickAdd(() => navigateToTabRoute("dashboard"))}
+          navItems={webTabs.map(({ value, label }) => ({
+            key: value,
+            label,
+            active: tab === value,
+            onPress: () => {
+              closeQuickAdd(() => navigateToTabRoute(value));
             },
-          ]}
+          }))}
+          account={{
+            avatarUrl: auth.user?.avatar_url,
+            avatarInitial: webProfileInitial,
+            displayName: webProfileName,
+            email: auth.user?.email ?? undefined,
+            sections: [
+              {
+                key: "account",
+                title: "Cuenta",
+                items: [
+                  {
+                    key: "profile",
+                    label: "Ver perfil",
+                    description: "Tu perfil social y actividad",
+                    onPress: openMySocialProfile,
+                  },
+                  {
+                    key: "edit-profile",
+                    label: "Editar perfil",
+                    description: "Peso, objetivo y datos base",
+                    onPress: openProfileEditor,
+                  },
+                  {
+                    key: "settings",
+                    label: "Ajustes",
+                    description: "Preferencias, IA y exportación",
+                    onPress: openSettingsHome,
+                  },
+                ],
+              },
+              {
+                key: "personalization",
+                title: "Personalización",
+                items: [
+                  {
+                    key: "change-avatar",
+                    label: "Cambiar foto",
+                    description: "Actualiza tu avatar",
+                    onPress: () => {
+                      closeQuickAdd();
+                      openAvatarSourceSheet();
+                    },
+                  },
+                ],
+              },
+              {
+                key: "session",
+                items: [
+                  {
+                    key: "logout",
+                    label: "Cerrar sesión",
+                    description: "Cerrar la sesión actual",
+                    onPress: () => void auth.logout(),
+                    danger: true,
+                  },
+                ],
+              },
+            ],
+          }}
         >
-          {visitedTabs.dashboard ? <DashboardScreen isActive={tab === "dashboard"} onOpenBodyProgress={() => setTabWithFade("body")} /> : null}
-        </Animated.View>
-        <Animated.View
-          pointerEvents={tab === "add" && !tabTransitioning ? "auto" : "none"}
-          style={[
-            styles.tabScene,
-            isWeb && styles.tabSceneWebOffset,
-            {
-              opacity: sceneOpacityRef.current.add,
-              zIndex: tab === "add" ? 3 : transitionFromTab === "add" ? 2 : 1,
-            },
-          ]}
-        >
-          {visitedTabs.add ? (
-            <AddScreen
-              isActive={tab === "add"}
-              launchAction={launchAction}
-              onLaunchActionHandled={(requestId) => {
-                setLaunchAction((current) => {
-                  if (!current || current.requestId !== requestId) {
-                    return current;
-                  }
-                  return null;
-                });
-              }}
-              onIntakeSaved={() => setTabWithFade("dashboard")}
-              onMealSourceSheetVisibilityChange={setHideTabBarForOverlay}
-              onScanCameraVisibilityChange={setHideTabBarForScanCamera}
-              onMealQuestionsVisibilityChange={setHideTabBarForMealQuestions}
-              onBackToPanel={() => setTabWithFade("dashboard")}
-            />
-          ) : null}
-        </Animated.View>
-        <Animated.View
-          pointerEvents={tab === "body" && !tabTransitioning ? "auto" : "none"}
-          style={[
-            styles.tabScene,
-            isWeb && styles.tabSceneWebOffset,
-            {
-              opacity: sceneOpacityRef.current.body,
-              zIndex: tab === "body" ? 3 : transitionFromTab === "body" ? 2 : 1,
-            },
-          ]}
-        >
-          {visitedTabs.body ? <BodyProgressScreen /> : null}
-        </Animated.View>
-        <Animated.View
-          pointerEvents={tab === "history" && !tabTransitioning ? "auto" : "none"}
-          style={[
-            styles.tabScene,
-            isWeb && styles.tabSceneWebOffset,
-            {
-              opacity: sceneOpacityRef.current.history,
-              zIndex: tab === "history" ? 3 : transitionFromTab === "history" ? 2 : 1,
-            },
-          ]}
-        >
-          {visitedTabs.history ? <HistoryScreen isActive={tab === "history"} /> : null}
-        </Animated.View>
-        <Animated.View
-          pointerEvents={tab === "social" && !tabTransitioning ? "auto" : "none"}
-          style={[
-            styles.tabScene,
-            isWeb && styles.tabSceneWebOffset,
-            {
-              opacity: sceneOpacityRef.current.social,
-              zIndex: tab === "social" ? 3 : transitionFromTab === "social" ? 2 : 1,
-            },
-          ]}
-        >
-          {visitedTabs.social ? <SocialScreen /> : null}
-        </Animated.View>
-        <Animated.View
-          pointerEvents={tab === "settings" && !tabTransitioning ? "auto" : "none"}
-          style={[
-            styles.tabScene,
-            isWeb && styles.tabSceneWebOffset,
-            {
-              opacity: sceneOpacityRef.current.settings,
-              zIndex: tab === "settings" ? 3 : transitionFromTab === "settings" ? 2 : 1,
-            },
-          ]}
-        >
-          {visitedTabs.settings ? <SettingsScreen isActive={tab === "settings"} /> : null}
-        </Animated.View>
-      </View>
+          {tabScenes}
+        </AppLayout>
+      ) : (
+        tabScenes
+      )}
 
       {!isWeb ? (
         <Animated.View
@@ -15655,6 +14785,56 @@ function MainAppTabs() {
 
 function RootNavigator() {
   const auth = useAuth();
+  const isWeb = Platform.OS === "web";
+  const router = useWebRouter();
+  const initialAuthenticatedEntryHandledRef = useRef(false);
+
+  useEffect(() => {
+    if (!auth.user || !auth.user.email_verified || !auth.user.onboarding_completed) {
+      initialAuthenticatedEntryHandledRef.current = false;
+    }
+  }, [auth.user]);
+
+  useEffect(() => {
+    if (!isWeb || auth.loading) {
+      return;
+    }
+    const currentPath = normalizeWebPath(router.path);
+
+    if (!auth.user && !auth.pendingVerificationEmail) {
+      if (currentPath === "/login" || currentPath === "/register" || currentPath === "/") {
+        return;
+      }
+      router.replace("/");
+      return;
+    }
+
+    if ((auth.user && !auth.user.email_verified) || auth.pendingVerificationEmail) {
+      if (currentPath !== "/verify") {
+        router.replace("/verify");
+      }
+      return;
+    }
+
+    if (auth.user && auth.user.email_verified && !auth.user.onboarding_completed) {
+      if (currentPath !== "/onboarding") {
+        router.replace("/onboarding");
+      }
+      return;
+    }
+
+    if (!initialAuthenticatedEntryHandledRef.current) {
+      initialAuthenticatedEntryHandledRef.current = true;
+      if (currentPath === "/" && shouldRedirectAuthenticatedRootToApp()) {
+        router.replace("/app/dashboard");
+        return;
+      }
+    }
+
+    if (!isAppRoute(currentPath) && currentPath !== "/") {
+      router.replace("/app/dashboard");
+    }
+  }, [auth.loading, auth.pendingVerificationEmail, auth.user, isWeb, router]);
 
   if (auth.loading) {
     return <LoadingGate />;
@@ -15672,17 +14852,89 @@ function RootNavigator() {
     return <OnboardingWizard />;
   }
 
+  if (isWeb && normalizeWebPath(router.path) === "/") {
+    return (
+      <WelcomeScreen
+        onCreate={() => router.navigate("/app/dashboard")}
+        onLogin={() => router.navigate("/app/social")}
+        onHome={() => router.navigate("/app/dashboard")}
+        createLabel="Ir al panel"
+        loginLabel="Ir a Social"
+        topbarNavItems={[
+          { key: "dashboard", label: "Panel", active: false, onPress: () => router.navigate("/app/dashboard") },
+          { key: "body", label: "Cuerpo", active: false, onPress: () => router.navigate("/app/body") },
+          { key: "social", label: "Social", active: false, onPress: () => router.navigate("/app/social") },
+          { key: "history", label: "Historial", active: false, onPress: () => router.navigate("/app/history") },
+          { key: "settings", label: "Ajustes", active: false, onPress: () => router.navigate("/app/settings") },
+        ]}
+        topbarAccount={{
+          avatarUrl: auth.user?.avatar_url,
+          avatarInitial: auth.user?.username?.slice(0, 1).toUpperCase() || "N",
+          displayName: auth.user?.username?.trim() || auth.user?.email?.split("@")[0] || "Usuario",
+          email: auth.user?.email ?? undefined,
+          sections: [
+            {
+              key: "account",
+              title: "Cuenta",
+              items: [
+                {
+                  key: "profile",
+                  label: "Ver perfil",
+                  description: "Tu perfil social y actividad",
+                  onPress: () => {
+                    const username = auth.user?.username?.trim();
+                    if (username) {
+                      router.navigate(socialProfileRoute(username));
+                      return;
+                    }
+                    router.navigate("/app/social");
+                  },
+                },
+                {
+                  key: "edit-profile",
+                  label: "Editar perfil",
+                  description: "Peso, objetivo y datos base",
+                  onPress: () => router.navigate("/app/settings"),
+                },
+                {
+                  key: "settings",
+                  label: "Ajustes",
+                  description: "Preferencias, IA y exportación",
+                  onPress: () => router.navigate("/app/settings"),
+                },
+              ],
+            },
+            {
+              key: "session",
+              items: [
+                {
+                  key: "logout",
+                  label: "Cerrar sesión",
+                  description: "Cerrar la sesión actual",
+                  onPress: () => void auth.logout(),
+                  danger: true,
+                },
+              ],
+            },
+          ],
+        }}
+      />
+    );
+  }
+
   return <MainAppTabs />;
 }
 
 export default function App() {
   return (
     <I18nProvider>
-      <AuthProvider>
-        <StatusBar style="light" />
-        <RootNavigator />
-        <InAppAlertHost />
-      </AuthProvider>
+      <WebRouterProvider>
+        <AuthProvider>
+          <StatusBar style="light" />
+          <RootNavigator />
+          <InAppAlertHost />
+        </AuthProvider>
+      </WebRouterProvider>
     </I18nProvider>
   );
 }
@@ -17570,12 +16822,12 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   socialActionButton: {
-    minWidth: 96,
+    minWidth: 104,
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 11,
+    borderRadius: 14,
     backgroundColor: theme.accent,
   },
   socialActionButtonDisabled: {
@@ -17587,19 +16839,250 @@ const styles = StyleSheet.create({
     fontWeight: "800",
   },
   socialMainContent: {
-    paddingBottom: Platform.OS === "web" ? 140 : 110,
+    paddingBottom: Platform.OS === "web" ? 156 : 118,
+    gap: 16,
+  },
+  socialHeroPanel: {
+    gap: 12,
+  },
+  socialHeroShell: {
+    flexDirection: Platform.OS === "web" ? "row" : "column",
+    alignItems: Platform.OS === "web" ? "center" : "stretch",
+    borderRadius: 26,
+    borderWidth: 1,
+    borderColor: "#262b33",
+    backgroundColor: "#10141a",
+    padding: Platform.OS === "web" ? 22 : 18,
+    gap: 16,
+  },
+  socialHeroCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 8,
+  },
+  socialHeroEyebrow: {
+    color: "#8f98a6",
+    fontSize: 11,
+    fontWeight: "800",
+    textTransform: "uppercase",
+    letterSpacing: 1,
+  },
+  socialHeroTitle: {
+    color: theme.text,
+    fontSize: Platform.OS === "web" ? 31 : 25,
+    fontWeight: "900",
+    letterSpacing: -0.65,
+  },
+  socialHeroSubtitle: {
+    color: "#b7bfcb",
+    fontSize: Platform.OS === "web" ? 14 : 14,
+    lineHeight: Platform.OS === "web" ? 22 : 21,
+    maxWidth: 720,
+  },
+  socialHeroInlineMeta: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: 8,
+  },
+  socialHeroInlineMetaText: {
+    color: "#8f98a6",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  socialHeroInlineMetaDot: {
+    color: "#55606e",
+    fontSize: 11,
+    fontWeight: "800",
+  },
+  socialHeroActions: {
+    width: Platform.OS === "web" ? 290 : "100%",
+    maxWidth: "100%",
+    gap: 10,
+  },
+  socialHeroPrimaryAction: {
+    minHeight: 52,
+    paddingHorizontal: 18,
+  },
+  socialHeroPrimaryActionText: {
+    fontSize: 14,
+    fontWeight: "800",
+    letterSpacing: -0.1,
+  },
+  socialHeroActionHint: {
+    color: "#8f98a6",
+    fontSize: 12,
+    lineHeight: 18,
+    maxWidth: 280,
+  },
+  socialHeroNavWrap: {
+    marginTop: 4,
+  },
+  socialHeroFiltersWrap: {
+    marginTop: 8,
+  },
+  socialCreatePromptCard: {
     gap: 14,
+    backgroundColor: "#10151b",
+    borderColor: "#222a35",
+  },
+  socialCreatePromptRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 14,
+  },
+  socialCreatePromptIdentity: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    flex: 1,
+    minWidth: 0,
+  },
+  socialCreatePromptCopy: {
+    flex: 1,
+    gap: 4,
+  },
+  socialCreatePromptTitle: {
+    color: theme.text,
+    fontSize: 17,
+    fontWeight: "800",
+    letterSpacing: -0.2,
+  },
+  socialCreatePromptSubtitle: {
+    color: "#aeb7c4",
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  socialCreateInlineButton: {
+    minHeight: 44,
+    paddingHorizontal: 16,
+    borderRadius: 14,
+  },
+  socialCreateInlineButtonText: {
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  socialCreatePromptInput: {
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "#26303b",
+    backgroundColor: "#141922",
+    paddingHorizontal: 16,
+    paddingVertical: 15,
+    minHeight: 54,
+    justifyContent: "center",
+  },
+  socialCreatePromptPlaceholder: {
+    color: "#9099a7",
+    fontSize: 14,
+    lineHeight: 21,
+  },
+  socialCreateQuickRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+  socialCreateQuickChip: {
+    flex: 1,
+    minWidth: Platform.OS === "web" ? 170 : 148,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#26303b",
+    backgroundColor: "#141922",
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 4,
+    minHeight: 72,
+    justifyContent: "center",
+  },
+  socialCreateQuickChipTitle: {
+    color: theme.text,
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  socialCreateQuickChipMeta: {
+    color: "#929ba9",
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  socialFeedGap: {
+    height: 6,
+  },
+  socialSearchCard: {
+    gap: 14,
+  },
+  socialNetworkSectionCard: {
+    gap: 14,
+  },
+  socialUserCardGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 12,
+  },
+  socialUserCard: {
+    flexBasis: Platform.OS === "web" ? "48%" : "100%",
+    gap: 12,
+    backgroundColor: "#11151c",
+    borderColor: "#242c36",
+  },
+  socialUserCardRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 14,
+  },
+  socialUserCardIdentity: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    flex: 1,
+    minWidth: 0,
+  },
+  socialUserCardCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 4,
+  },
+  socialUserCardHandle: {
+    color: theme.text,
+    fontSize: 16,
+    fontWeight: "800",
+  },
+  socialUserCardSubtitle: {
+    color: "#9aa3b1",
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  socialUserCardActions: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: 10,
+    marginLeft: "auto",
+  },
+  socialUserCardMeta: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  socialInteractivePressed: {
+    opacity: 0.94,
+    transform: [{ scale: 0.99 }],
   },
   socialSegmentsRow: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 10,
-    marginTop: Platform.OS === "web" ? 10 : 6,
-    marginBottom: 4,
+    gap: 12,
+    marginTop: 0,
+    marginBottom: 0,
   },
   socialFilterBlock: {
     gap: 10,
-    marginBottom: 6,
+    marginTop: 2,
+    marginBottom: 2,
   },
   socialFilterSection: {
     gap: 8,
@@ -17619,10 +17102,12 @@ const styles = StyleSheet.create({
   socialFilterSelect: {
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: theme.border,
-    backgroundColor: theme.panelSoft,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    borderColor: "#262f39",
+    backgroundColor: "#10151d",
+    paddingHorizontal: 15,
+    paddingVertical: 11,
+    minHeight: 42,
+    justifyContent: "center",
   },
   socialFilterSelectPressed: {
     opacity: 0.92,
@@ -17634,8 +17119,8 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   socialFilterSelectLabel: {
-    color: theme.muted,
-    fontSize: 13,
+    color: "#8f98a6",
+    fontSize: 12,
     fontWeight: "700",
   },
   socialFilterSelectDivider: {
@@ -17645,12 +17130,12 @@ const styles = StyleSheet.create({
   },
   socialFilterSelectValue: {
     color: theme.text,
-    fontSize: 13,
-    fontWeight: "700",
+    fontSize: 12,
+    fontWeight: "800",
   },
   socialFilterSelectChevron: {
-    color: theme.muted,
-    fontSize: 13,
+    color: "#8f98a6",
+    fontSize: 12,
     fontWeight: "800",
   },
   socialFilterModalCard: {
@@ -17728,19 +17213,20 @@ const styles = StyleSheet.create({
     gap: 8,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: theme.border,
-    backgroundColor: theme.panelSoft,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    borderColor: "#26303b",
+    backgroundColor: "#10151d",
+    paddingHorizontal: 16,
+    paddingVertical: 11,
+    minHeight: 42,
   },
   socialSegmentChipActive: {
-    borderColor: theme.accent,
-    backgroundColor: theme.accentSoft,
+    borderColor: "rgba(45,212,191,0.34)",
+    backgroundColor: "rgba(45,212,191,0.12)",
   },
   socialSegmentChipText: {
-    color: theme.muted,
+    color: "#98a1ae",
     fontSize: 13,
-    fontWeight: "700",
+    fontWeight: "800",
   },
   socialSegmentChipTextActive: {
     color: theme.text,
@@ -17767,12 +17253,22 @@ const styles = StyleSheet.create({
   },
   socialStatusCard: {
     gap: 10,
+    backgroundColor: "#131922",
+    borderColor: "#26303c",
   },
   socialSkeletonList: {
     gap: 12,
   },
   socialPostCard: {
-    gap: 12,
+    gap: 14,
+    overflow: "hidden",
+    backgroundColor: "#10151b",
+    borderColor: "#222a35",
+  },
+  socialPostAccentBar: {
+    height: 2,
+    borderRadius: 999,
+    marginBottom: 0,
   },
   socialSkeletonHeader: {
     flexDirection: "row",
@@ -17813,7 +17309,7 @@ const styles = StyleSheet.create({
   },
   socialPostHeader: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
     justifyContent: "space-between",
     gap: 12,
     flexWrap: "wrap",
@@ -17827,29 +17323,43 @@ const styles = StyleSheet.create({
   },
   socialPostUserCopy: {
     flex: 1,
-    gap: 3,
+    gap: 4,
     minWidth: 0,
+  },
+  socialPostIdentityRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    flexWrap: "wrap",
   },
   socialPostUserName: {
     color: theme.text,
-    fontSize: Platform.OS === "web" ? 16 : 15,
+    fontSize: Platform.OS === "web" ? 15 : 15,
     fontWeight: "800",
   },
+  socialPostMetaContext: {
+    color: "#8ed8cd",
+    fontSize: 11,
+    fontWeight: "800",
+    textTransform: "uppercase",
+    letterSpacing: 0.45,
+  },
   socialPostMeta: {
-    color: theme.muted,
+    color: "#96a0ad",
     fontSize: 12,
     fontWeight: "600",
+    lineHeight: 18,
   },
   socialPostBadges: {
     flexDirection: "row",
     flexWrap: "wrap",
     justifyContent: "flex-end",
-    gap: 8,
+    gap: 6,
   },
   socialTypeBadge: {
     borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingHorizontal: 11,
+    paddingVertical: 6,
     borderWidth: 1,
   },
   socialTypeBadgeText: {
@@ -17859,7 +17369,7 @@ const styles = StyleSheet.create({
   socialPostHeaderRight: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
+    gap: 8,
     marginLeft: "auto",
   },
   socialPostManageButton: {
@@ -17869,8 +17379,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
-    borderColor: theme.border,
-    backgroundColor: theme.panelSoft,
+    borderColor: "#2a313c",
+    backgroundColor: "#151a22",
   },
   socialPostManageButtonText: {
     color: theme.text,
@@ -17880,37 +17390,35 @@ const styles = StyleSheet.create({
     marginTop: -4,
   },
   socialMediaCarousel: {
-    gap: 10,
+    gap: 8,
   },
   socialMediaImage: {
-    borderRadius: 18,
+    borderRadius: 20,
     borderWidth: 1,
-    borderColor: theme.border,
-    backgroundColor: theme.panelSoft,
+    borderColor: "#252d38",
+    backgroundColor: "#151922",
   },
   socialCaptionWrap: {
-    gap: 6,
+    gap: 8,
   },
   socialCaptionText: {
     color: theme.text,
     fontSize: 14,
-    lineHeight: 21,
+    lineHeight: 22,
   },
   socialCaptionToggle: {
     alignSelf: "flex-start",
   },
   socialCaptionToggleText: {
     color: theme.accent,
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: "700",
   },
   socialRecipeCard: {
     gap: 12,
     borderRadius: 18,
-    borderWidth: 1,
-    borderColor: theme.border,
-    backgroundColor: theme.panelSoft,
-    padding: 14,
+    backgroundColor: "#131821",
+    padding: 15,
   },
   socialRecipeHeader: {
     gap: 8,
@@ -17925,6 +17433,11 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 8,
+  },
+  socialRecipeMetaText: {
+    color: "#95a0ae",
+    fontSize: 12,
+    fontWeight: "700",
   },
   socialRecipeMacroSummary: {
     marginTop: 2,
@@ -17942,7 +17455,7 @@ const styles = StyleSheet.create({
   socialRecipeListText: {
     color: theme.text,
     fontSize: 13,
-    lineHeight: 19,
+    lineHeight: 20,
   },
   socialRecipeListMore: {
     color: theme.muted,
@@ -17956,8 +17469,8 @@ const styles = StyleSheet.create({
   },
   socialNutritionPill: {
     borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
     borderWidth: 1,
   },
   socialNutritionPillKcal: {
@@ -17986,6 +17499,39 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     gap: 10,
   },
+  socialProgressPanel: {
+    gap: 12,
+    borderRadius: 18,
+    backgroundColor: "#131821",
+    padding: 15,
+  },
+  socialProgressStatsGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  socialProgressStat: {
+    minWidth: 120,
+    flex: 1,
+    borderRadius: 14,
+    backgroundColor: "#10151c",
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    gap: 4,
+  },
+  socialProgressStatLabel: {
+    color: "#96a0ad",
+    fontSize: 11,
+    fontWeight: "800",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  socialProgressStatValue: {
+    color: theme.text,
+    fontSize: 18,
+    fontWeight: "900",
+    letterSpacing: -0.2,
+  },
   socialProgressNotes: {
     width: "100%",
     borderRadius: 14,
@@ -18008,25 +17554,34 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    borderRadius: 999,
+    borderRadius: 14,
     borderWidth: 1,
-    borderColor: theme.border,
-    backgroundColor: theme.panelSoft,
-    paddingHorizontal: 12,
+    borderColor: "#252d37",
+    backgroundColor: "#121720",
+    paddingHorizontal: 13,
     paddingVertical: 10,
+    minWidth: 0,
+    minHeight: 42,
   },
-  socialActionPillIcon: {
-    color: theme.muted,
+  socialActionPillActive: {
+    borderColor: "rgba(236,72,153,0.38)",
+    backgroundColor: "rgba(236,72,153,0.12)",
+  },
+  socialActionPillLabel: {
+    color: theme.text,
     fontSize: 13,
-    fontWeight: "800",
+    fontWeight: "900",
   },
-  socialActionPillIconActive: {
+  socialActionPillLabelActive: {
     color: theme.fats,
   },
   socialActionPillText: {
-    color: theme.text,
+    color: "#aab2bf",
     fontSize: 12,
     fontWeight: "700",
+  },
+  socialActionPillTextActive: {
+    color: theme.text,
   },
   socialDirectoryList: {
     gap: 4,
@@ -18070,6 +17625,18 @@ const styles = StyleSheet.create({
   },
   socialProfileHero: {
     gap: 16,
+    backgroundColor: "#11151c",
+    borderColor: "#252d38",
+    overflow: "hidden",
+  },
+  socialProfileCoverGlow: {
+    position: "absolute",
+    top: -80,
+    right: -20,
+    width: 220,
+    height: 220,
+    borderRadius: 999,
+    backgroundColor: "rgba(45,212,191,0.08)",
   },
   socialProfileTopRow: {
     flexDirection: "row",
@@ -18096,10 +17663,41 @@ const styles = StyleSheet.create({
     fontWeight: "900",
     letterSpacing: -0.3,
   },
+  socialProfileEmail: {
+    color: "#a8b1be",
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  socialProfileMetaRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 2,
+  },
+  socialProfileActions: {
+    alignItems: "flex-end",
+    marginLeft: "auto",
+  },
   socialProfileStatsRow: {
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 10,
+  },
+  socialProfileSectionHeader: {
+    gap: 4,
+    paddingHorizontal: 2,
+    marginTop: 4,
+  },
+  socialProfileSectionTitle: {
+    color: theme.text,
+    fontSize: 18,
+    fontWeight: "800",
+    letterSpacing: -0.25,
+  },
+  socialProfileSectionSubtitle: {
+    color: "#9aa3b1",
+    fontSize: 13,
+    lineHeight: 19,
   },
   socialModalLayer: {
     ...StyleSheet.absoluteFillObject,
@@ -18121,23 +17719,91 @@ const styles = StyleSheet.create({
   },
   socialModalCard: {
     width: "100%",
-    maxWidth: Platform.OS === "web" ? 760 : 680,
+    maxWidth: Platform.OS === "web" ? 820 : 680,
     alignSelf: "center",
-    borderRadius: 24,
+    borderRadius: 26,
     borderWidth: 1,
-    borderColor: theme.border,
-    backgroundColor: theme.panel,
-    padding: 18,
-    gap: 14,
+    borderColor: "#29313b",
+    backgroundColor: "#10141b",
+    padding: 20,
+    gap: 18,
   },
   socialCommentsModalCard: {
     maxWidth: Platform.OS === "web" ? 700 : 640,
+  },
+  socialComposerModalCard: {
+    maxWidth: Platform.OS === "web" ? 860 : 720,
+  },
+  socialModalHeaderRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 14,
+  },
+  socialModalHeaderCopy: {
+    flex: 1,
+    gap: 6,
+  },
+  socialModalEyebrow: {
+    color: "#8f98a6",
+    fontSize: 11,
+    fontWeight: "800",
+    textTransform: "uppercase",
+    letterSpacing: 1,
   },
   socialModalTitle: {
     color: theme.text,
     fontSize: Platform.OS === "web" ? 22 : 18,
     fontWeight: "900",
     letterSpacing: -0.4,
+  },
+  socialModalSubtitle: {
+    color: "#a4adba",
+    fontSize: 13,
+    lineHeight: 20,
+  },
+  socialModalCloseButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "#29313b",
+    backgroundColor: "#141922",
+  },
+  socialModalCloseButtonText: {
+    color: theme.text,
+    fontSize: 20,
+    fontWeight: "700",
+    lineHeight: 20,
+    marginTop: -2,
+  },
+  socialComposerConfigGrid: {
+    flexDirection: Platform.OS === "web" ? "row" : "column",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+  socialComposerSection: {
+    gap: 14,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: "#262d37",
+    backgroundColor: "#131821",
+    padding: 16,
+  },
+  socialComposerSectionHead: {
+    gap: 4,
+  },
+  socialComposerSectionTitle: {
+    color: theme.text,
+    fontSize: 15,
+    fontWeight: "800",
+  },
+  socialComposerSectionMeta: {
+    color: "#9aa3b1",
+    fontSize: 12,
+    lineHeight: 18,
   },
   socialComposerTextarea: {
     minHeight: 110,
@@ -18149,9 +17815,31 @@ const styles = StyleSheet.create({
     gap: 10,
     marginBottom: 8,
   },
+  socialComposerUtilityButton: {
+    minHeight: 42,
+    paddingHorizontal: 16,
+    borderRadius: 14,
+  },
+  socialComposerUtilityButtonText: {
+    fontSize: 13,
+    fontWeight: "700",
+  },
   socialComposerPhotoStrip: {
     gap: 10,
     paddingTop: 4,
+  },
+  socialComposerPlaceholder: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#27303b",
+    backgroundColor: "#10151d",
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+  },
+  socialComposerPlaceholderText: {
+    color: "#9aa3b1",
+    fontSize: 12,
+    lineHeight: 18,
   },
   socialComposerPhotoItem: {
     position: "relative",
@@ -18228,8 +17916,29 @@ const styles = StyleSheet.create({
   },
   socialComposerActions: {
     flexDirection: "row",
+    flexWrap: "wrap",
     justifyContent: "flex-end",
     gap: 10,
+    marginTop: 8,
+    paddingTop: 2,
+  },
+  socialComposerFooterSecondaryButton: {
+    minHeight: 46,
+    paddingHorizontal: 18,
+    borderRadius: 15,
+  },
+  socialComposerFooterSecondaryButtonText: {
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  socialComposerFooterPrimaryButton: {
+    minHeight: 46,
+    paddingHorizontal: 20,
+    borderRadius: 15,
+  },
+  socialComposerFooterPrimaryButtonText: {
+    fontSize: 13,
+    fontWeight: "800",
   },
   socialListFooter: {
     alignItems: "center",
@@ -18248,6 +17957,23 @@ const styles = StyleSheet.create({
     alignItems: "flex-start",
     gap: 10,
   },
+  socialCommentBubble: {
+    flex: 1,
+    gap: 4,
+    minWidth: 0,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#272f39",
+    backgroundColor: "#131821",
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+  },
+  socialCommentHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
   socialCommentCopy: {
     flex: 1,
     gap: 4,
@@ -18258,18 +17984,35 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "800",
   },
+  socialCommentMeta: {
+    color: "#98a1af",
+    fontSize: 12,
+    fontWeight: "600",
+  },
   socialCommentText: {
     color: theme.text,
     fontSize: 13,
-    lineHeight: 19,
+    lineHeight: 20,
   },
   socialCommentComposer: {
     flexDirection: "row",
-    alignItems: "flex-end",
-    gap: 10,
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 12,
+    paddingTop: 4,
   },
   socialCommentInput: {
     flex: 1,
+    minWidth: 220,
+  },
+  socialCommentSubmitButton: {
+    minHeight: 44,
+    paddingHorizontal: 18,
+    borderRadius: 14,
+  },
+  socialCommentSubmitButtonText: {
+    fontSize: 13,
+    fontWeight: "800",
   },
   statPillLabel: {
     color: theme.muted,
