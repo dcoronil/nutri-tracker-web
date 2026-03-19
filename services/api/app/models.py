@@ -290,6 +290,25 @@ class UserFavoriteProduct(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utcnow, index=True)
 
 
+class MealPlanEntry(SQLModel, table=True):
+    __tablename__ = "meal_plan_entry"
+    __table_args__ = (
+        UniqueConstraint("user_id", "planned_date", "meal_type", "slot_index", name="uq_meal_plan_entry_slot"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="user_account.id", index=True)
+    planned_date: date_type = Field(index=True)
+    meal_type: RecipeMealType = Field(max_length=24)
+    slot_index: int = Field(default=0, ge=0, le=5)
+    recipe_id: int | None = Field(default=None, foreign_key="user_recipe.id", index=True)
+    product_id: int | None = Field(default=None, foreign_key="product.id", index=True)
+    servings: float = Field(default=1, gt=0, le=20)
+    note: str | None = Field(default=None, max_length=280)
+    created_at: datetime = Field(default_factory=utcnow, index=True)
+    updated_at: datetime = Field(default_factory=utcnow, index=True)
+
+
 class BodyProgressPhoto(SQLModel, table=True):
     __tablename__ = "body_progress_photo"
 

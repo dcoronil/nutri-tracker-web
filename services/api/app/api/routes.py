@@ -37,6 +37,7 @@ from app.models import (
     Intake,
     IntakeMethod,
     MealPhotoAnalysis,
+    MealPlanEntry,
     NutritionBasis,
     PendingRegistration,
     Product,
@@ -88,6 +89,11 @@ from app.schemas import (
     IntakeRead,
     LabelPhotoResponse,
     LoginRequest,
+    MealPlanDayRead,
+    MealPlanEntryRead,
+    MealPlanEntryUpsert,
+    MealPlanShoppingListResponse,
+    MealPlanWeekResponse,
     MealEstimateQuestionsResponse,
     MealPhotoEstimateResponse,
     MeResponse,
@@ -123,6 +129,7 @@ from app.schemas import (
     SocialSearchItem,
     SocialUserRead,
     SocialUserSearchResponse,
+    ShoppingListItem,
     UserAIKeyDeleteResponse,
     UserAIKeyStatusResponse,
     UserAIKeyTestRequest,
@@ -1556,6 +1563,64 @@ def _body_photo_to_read(record: BodyProgressPhoto) -> BodyProgressPhotoRead:
         is_private=record.is_private,
         created_at=record.created_at,
     )
+
+
+def _meal_plan_entry_to_read(
+    *,
+    entry: MealPlanEntry,
+    recipes_by_id: dict[int, UserRecipe],
+    products_by_id: dict[int, Product],
+    prefs_by_product_id: dict[int, UserProductPreference],
+) -> MealPlanEntryRead:
+    recipe_payload = None
+    product_payload = None
+    title = "Plan"
+    source_type: Literal["recipe", "product"] = "product"
+
+    if entry.recipe_id is not None:
+        recipe = recipes_by_id.get(entry.recipe_id)
+        if recipe is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Receta planificada no encontrada")
+        product = products_by_id.get(recipe.product_id)
+        if product is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Producto de receta planificada no encontrado")
+        recipe_payload = _user_recipe_to_read_with_pref(
+            recipe=recipe,
+            product=product,
+            pref=prefs_by_product_id.get(product.id),
+        )
+        title = recipe.title
+        source_type = "recipe"
+    elif entry.product_id is not None:
+        product = products_by_id.get(entry.product_id)
+        if product is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Producto planificado no encontrado")
+        product_payload = ProductRead.model_validate(product)
+        title = product.name
+        source_type = "product"
+    else:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Entrada de plan invalida")
+
+    return MealPlanEntryRead(
+        id=entry.id,
+        planned_date=entry.planned_date,
+        meal_type=entry.meal_type,
+        slot_index=entry.slot_index,
+        servings=entry.servings,
+        note=entry.note,
+        title=title,
+        source_type=source_type,
+        recipe=recipe_payload,
+        product=product_payload,
+        created_at=entry.created_at,
+        updated_at=entry.updated_at,
+    )
+
+
+def _normalize_shopping_item_key(name: str, unit: str | None, source_type: str) -> tuple[str, str, str]:
+    normalized_name = " ".join(name.strip().lower().split())
+    normalized_unit = " ".join((unit or "").strip().lower().split())
+    return normalized_name, normalized_unit, source_type
 
 
 def _social_user_to_read(request: Request, user: UserAccount) -> SocialUserRead:
@@ -3356,6 +3421,241 @@ def list_body_measurement_logs(
         .limit(bounded_limit)
     ).all()
     return [_measurement_log_to_read(row) for row in rows]
+
+
+def _resolved_week_start(target_day: date) -> date:
+    return target_day - timedelta(days=target_day.weekday())
+
+
+def _load_meal_plan_reference_maps(
+    *,
+    session: Session,
+    current_user: UserAccount,
+    entries: list[MealPlanEntry],
+) -> tuple[dict[int, UserRecipe], dict[int, Product], dict[int, UserProductPreference]]:
+    recipe_ids = [entry.recipe_id for entry in entries if entry.recipe_id is not None]
+    recipes = (
+        session.exec(
+            select(UserRecipe)
+            .where(UserRecipe.user_id == current_user.id)
+            .where(UserRecipe.id.in_(recipe_ids))
+        ).all()
+        if recipe_ids
+        else []
+    )
+    recipes_by_id = {recipe.id: recipe for recipe in recipes if recipe.id is not None}
+
+    product_ids = {entry.product_id for entry in entries if entry.product_id is not None}
+    product_ids.update({recipe.product_id for recipe in recipes if recipe.product_id is not None})
+    products = session.exec(select(Product).where(Product.id.in_(product_ids))).all() if product_ids else []
+    products_by_id = {product.id: product for product in products if product.id is not None}
+
+    prefs = (
+        session.exec(
+            select(UserProductPreference)
+            .where(UserProductPreference.user_id == current_user.id)
+            .where(UserProductPreference.product_id.in_(product_ids))
+        ).all()
+        if product_ids
+        else []
+    )
+    prefs_by_product_id = {pref.product_id: pref for pref in prefs}
+    return recipes_by_id, products_by_id, prefs_by_product_id
+
+
+@router.get("/meal-plan/week/{target_day}", response_model=MealPlanWeekResponse)
+def get_week_meal_plan(
+    target_day: date,
+    current_user: Annotated[UserAccount, Depends(get_ready_user)],
+    session: Annotated[Session, Depends(get_session)],
+) -> MealPlanWeekResponse:
+    week_start = _resolved_week_start(target_day)
+    week_end = week_start + timedelta(days=6)
+    entries = session.exec(
+        select(MealPlanEntry)
+        .where(MealPlanEntry.user_id == current_user.id)
+        .where(MealPlanEntry.planned_date >= week_start)
+        .where(MealPlanEntry.planned_date <= week_end)
+        .order_by(MealPlanEntry.planned_date.asc(), MealPlanEntry.meal_type.asc(), MealPlanEntry.slot_index.asc())
+    ).all()
+    recipes_by_id, products_by_id, prefs_by_product_id = _load_meal_plan_reference_maps(
+        session=session,
+        current_user=current_user,
+        entries=entries,
+    )
+
+    days: list[MealPlanDayRead] = []
+    for offset in range(7):
+        current_day = week_start + timedelta(days=offset)
+        current_entries = [
+            _meal_plan_entry_to_read(
+                entry=entry,
+                recipes_by_id=recipes_by_id,
+                products_by_id=products_by_id,
+                prefs_by_product_id=prefs_by_product_id,
+            )
+            for entry in entries
+            if entry.planned_date == current_day
+        ]
+        days.append(MealPlanDayRead(date=current_day, entries=current_entries))
+
+    return MealPlanWeekResponse(week_start=week_start, week_end=week_end, days=days)
+
+
+@router.post("/meal-plan/entries", response_model=MealPlanEntryRead)
+def upsert_meal_plan_entry(
+    payload: MealPlanEntryUpsert,
+    request: Request,
+    current_user: Annotated[UserAccount, Depends(get_ready_user)],
+    session: Annotated[Session, Depends(get_session)],
+) -> MealPlanEntryRead:
+    _rate_limit(request, scope="meal_plan_upsert", limit=80, window_seconds=60, key_suffix=str(current_user.id))
+
+    recipe = None
+    product = None
+    if payload.recipe_id is not None:
+        recipe = session.get(UserRecipe, payload.recipe_id)
+        if recipe is None or recipe.user_id != current_user.id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Receta no encontrada")
+    if payload.product_id is not None:
+        product = session.get(Product, payload.product_id)
+        if product is None or product.is_hidden:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Producto no encontrado")
+
+    entry = session.exec(
+        select(MealPlanEntry)
+        .where(MealPlanEntry.user_id == current_user.id)
+        .where(MealPlanEntry.planned_date == payload.planned_date)
+        .where(MealPlanEntry.meal_type == payload.meal_type)
+        .where(MealPlanEntry.slot_index == payload.slot_index)
+    ).first()
+    now = datetime.now(UTC)
+    if entry is None:
+        entry = MealPlanEntry(
+            user_id=current_user.id,
+            planned_date=payload.planned_date,
+            meal_type=payload.meal_type,
+            slot_index=payload.slot_index,
+            created_at=now,
+            updated_at=now,
+        )
+    entry.recipe_id = recipe.id if recipe else None
+    entry.product_id = product.id if product else None
+    entry.servings = payload.servings
+    entry.note = (payload.note or "").strip() or None
+    entry.updated_at = now
+    session.add(entry)
+    session.commit()
+    session.refresh(entry)
+
+    entries = [entry]
+    recipes_by_id, products_by_id, prefs_by_product_id = _load_meal_plan_reference_maps(
+        session=session,
+        current_user=current_user,
+        entries=entries,
+    )
+    return _meal_plan_entry_to_read(
+        entry=entry,
+        recipes_by_id=recipes_by_id,
+        products_by_id=products_by_id,
+        prefs_by_product_id=prefs_by_product_id,
+    )
+
+
+@router.delete("/meal-plan/entries/{entry_id}")
+def delete_meal_plan_entry(
+    entry_id: int,
+    current_user: Annotated[UserAccount, Depends(get_ready_user)],
+    session: Annotated[Session, Depends(get_session)],
+) -> dict[str, object]:
+    entry = session.get(MealPlanEntry, entry_id)
+    if entry is None or entry.user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Entrada no encontrada")
+    session.delete(entry)
+    session.commit()
+    return {"deleted": True, "entry_id": entry_id}
+
+
+@router.get("/meal-plan/week/{target_day}/shopping-list", response_model=MealPlanShoppingListResponse)
+def get_week_shopping_list(
+    target_day: date,
+    current_user: Annotated[UserAccount, Depends(get_ready_user)],
+    session: Annotated[Session, Depends(get_session)],
+) -> MealPlanShoppingListResponse:
+    week_start = _resolved_week_start(target_day)
+    week_end = week_start + timedelta(days=6)
+    entries = session.exec(
+        select(MealPlanEntry)
+        .where(MealPlanEntry.user_id == current_user.id)
+        .where(MealPlanEntry.planned_date >= week_start)
+        .where(MealPlanEntry.planned_date <= week_end)
+        .order_by(MealPlanEntry.planned_date.asc(), MealPlanEntry.meal_type.asc(), MealPlanEntry.slot_index.asc())
+    ).all()
+    recipes_by_id, products_by_id, _ = _load_meal_plan_reference_maps(
+        session=session,
+        current_user=current_user,
+        entries=entries,
+    )
+
+    aggregated: dict[tuple[str, str, str], ShoppingListItem] = {}
+    for entry in entries:
+        if entry.recipe_id is not None:
+            recipe = recipes_by_id.get(entry.recipe_id)
+            if recipe is None:
+                continue
+            base_servings = max(float(recipe.servings), 1.0)
+            factor = float(entry.servings) / base_servings
+            for ingredient in recipe.ingredients_json:
+                name = str(ingredient.get("name") or "").strip()
+                if not name:
+                    continue
+                unit = str(ingredient.get("unit") or "").strip() or None
+                raw_quantity = ingredient.get("quantity")
+                quantity = float(raw_quantity) * factor if isinstance(raw_quantity, (int, float)) else None
+                key = _normalize_shopping_item_key(name, unit, "ingredient")
+                current = aggregated.get(key)
+                if current is None:
+                    aggregated[key] = ShoppingListItem(
+                        name=name,
+                        unit=unit,
+                        quantity=round(quantity, 2) if quantity is not None else None,
+                        occurrences=1,
+                        source_type="ingredient",
+                    )
+                    continue
+                current.occurrences += 1
+                if current.quantity is not None and quantity is not None:
+                    current.quantity = round(current.quantity + quantity, 2)
+                elif current.quantity is None and quantity is not None and current.occurrences == 1:
+                    current.quantity = round(quantity, 2)
+        elif entry.product_id is not None:
+            product = products_by_id.get(entry.product_id)
+            if product is None:
+                continue
+            key = _normalize_shopping_item_key(product.name, "ud", "product")
+            current = aggregated.get(key)
+            if current is None:
+                aggregated[key] = ShoppingListItem(
+                    name=product.name,
+                    unit="ud",
+                    quantity=round(entry.servings, 2),
+                    occurrences=1,
+                    source_type="product",
+                )
+                continue
+            current.occurrences += 1
+            current.quantity = round((current.quantity or 0) + entry.servings, 2)
+
+    items = sorted(
+        aggregated.values(),
+        key=lambda item: (0 if item.source_type == "ingredient" else 1, item.name.lower(), item.unit or ""),
+    )
+    return MealPlanShoppingListResponse(
+        week_start=week_start,
+        week_end=week_end,
+        planned_entry_count=len(entries),
+        items=items,
+    )
 
 
 @router.post("/body/progress-photos", response_model=BodyProgressPhotoRead)

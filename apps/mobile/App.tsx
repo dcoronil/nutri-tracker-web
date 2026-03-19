@@ -468,6 +468,55 @@ type FavoriteProduct = {
   created_at: string;
 };
 
+type MealPlanEntry = {
+  id: number;
+  planned_date: string;
+  meal_type: RecipeMealType;
+  slot_index: number;
+  servings: number;
+  note: string | null;
+  title: string;
+  source_type: "recipe" | "product";
+  recipe: UserRecipe | null;
+  product: Product | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type MealPlanDay = {
+  date: string;
+  entries: MealPlanEntry[];
+};
+
+type MealPlanWeek = {
+  week_start: string;
+  week_end: string;
+  days: MealPlanDay[];
+};
+
+type MealPlanShoppingItem = {
+  name: string;
+  unit: string | null;
+  quantity: number | null;
+  occurrences: number;
+  source_type: "ingredient" | "product";
+};
+
+type MealPlanShoppingList = {
+  week_start: string;
+  week_end: string;
+  planned_entry_count: number;
+  items: MealPlanShoppingItem[];
+};
+
+type BodyProgressPhoto = {
+  id: number;
+  image_url: string;
+  note: string | null;
+  is_private: boolean;
+  created_at: string;
+};
+
 type RepeatIntakesResponse = {
   copied: number;
   from_day: string;
@@ -772,9 +821,23 @@ type AuthContextValue = {
     thigh_cm?: number;
     created_at?: string;
   }) => Promise<BodyMeasurementLog>;
+  fetchBodyProgressPhotos: (limit?: number) => Promise<BodyProgressPhoto[]>;
+  createBodyProgressPhoto: (payload: { image_url: string; note?: string; is_private?: boolean; created_at?: string }) => Promise<BodyProgressPhoto>;
   fetchFavoriteProducts: (limit?: number) => Promise<FavoriteProduct[]>;
   addFavoriteProduct: (productId: number) => Promise<void>;
   removeFavoriteProduct: (productId: number) => Promise<void>;
+  fetchWeekMealPlan: (day: string) => Promise<MealPlanWeek>;
+  upsertMealPlanEntry: (payload: {
+    planned_date: string;
+    meal_type: RecipeMealType;
+    slot_index?: number;
+    recipe_id?: number;
+    product_id?: number;
+    servings?: number;
+    note?: string;
+  }) => Promise<MealPlanEntry>;
+  deleteMealPlanEntry: (entryId: number) => Promise<void>;
+  fetchMealPlanShoppingList: (day: string) => Promise<MealPlanShoppingList>;
   repeatIntakesFromDay: (fromDay: string, toDay?: string) => Promise<RepeatIntakesResponse>;
   searchSocialUsers: (query: string, limit?: number) => Promise<SocialSearchItem[]>;
   fetchSocialOverview: () => Promise<SocialOverview>;
@@ -1351,6 +1414,20 @@ function formatDateLocal(day: Date): string {
 
 function formatMonth(day: Date): string {
   return `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function startOfWeek(day: Date): Date {
+  const base = new Date(day);
+  const mondayOffset = (base.getDay() + 6) % 7;
+  base.setDate(base.getDate() - mondayOffset);
+  base.setHours(0, 0, 0, 0);
+  return base;
+}
+
+function addDays(day: Date, amount: number): Date {
+  const next = new Date(day);
+  next.setDate(next.getDate() + amount);
+  return next;
 }
 
 function monthFromKey(key: string): Date {
@@ -2638,6 +2715,22 @@ function AuthProvider({ children }: { children: import("react").ReactNode }) {
     [request],
   );
 
+  const fetchBodyProgressPhotos = useCallback(
+    async (limit = 120): Promise<BodyProgressPhoto[]> =>
+      request<BodyProgressPhoto[]>(`/body/progress-photos?limit=${limit}`),
+    [request],
+  );
+
+  const createBodyProgressPhoto = useCallback(
+    async (payload: { image_url: string; note?: string; is_private?: boolean; created_at?: string }): Promise<BodyProgressPhoto> =>
+      request<BodyProgressPhoto>("/body/progress-photos", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      }),
+    [request],
+  );
+
   const fetchFavoriteProducts = useCallback(
     async (limit = 60): Promise<FavoriteProduct[]> => request<FavoriteProduct[]>(`/favorites/products?limit=${limit}`),
     [request],
@@ -2658,6 +2751,43 @@ function AuthProvider({ children }: { children: import("react").ReactNode }) {
         method: "DELETE",
       });
     },
+    [request],
+  );
+
+  const fetchWeekMealPlan = useCallback(
+    async (day: string): Promise<MealPlanWeek> => request<MealPlanWeek>(`/meal-plan/week/${day}`),
+    [request],
+  );
+
+  const upsertMealPlanEntry = useCallback(
+    async (payload: {
+      planned_date: string;
+      meal_type: RecipeMealType;
+      slot_index?: number;
+      recipe_id?: number;
+      product_id?: number;
+      servings?: number;
+      note?: string;
+    }): Promise<MealPlanEntry> =>
+      request<MealPlanEntry>("/meal-plan/entries", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      }),
+    [request],
+  );
+
+  const deleteMealPlanEntry = useCallback(
+    async (entryId: number): Promise<void> => {
+      await request<{ deleted: boolean; entry_id: number }>(`/meal-plan/entries/${entryId}`, {
+        method: "DELETE",
+      });
+    },
+    [request],
+  );
+
+  const fetchMealPlanShoppingList = useCallback(
+    async (day: string): Promise<MealPlanShoppingList> => request<MealPlanShoppingList>(`/meal-plan/week/${day}/shopping-list`),
     [request],
   );
 
@@ -2746,9 +2876,15 @@ function AuthProvider({ children }: { children: import("react").ReactNode }) {
       createWeightLog,
       fetchMeasurementLogs,
       createMeasurementLog,
+      fetchBodyProgressPhotos,
+      createBodyProgressPhoto,
       fetchFavoriteProducts,
       addFavoriteProduct,
       removeFavoriteProduct,
+      fetchWeekMealPlan,
+      upsertMealPlanEntry,
+      deleteMealPlanEntry,
+      fetchMealPlanShoppingList,
       repeatIntakesFromDay,
       searchSocialUsers,
       fetchSocialOverview,
@@ -2775,6 +2911,7 @@ function AuthProvider({ children }: { children: import("react").ReactNode }) {
       createIntake,
       deleteIntake,
       createMeasurementLog,
+      createBodyProgressPhoto,
       createWeightLog,
       addFavoriteProduct,
       createWaterLog,
@@ -2806,6 +2943,7 @@ function AuthProvider({ children }: { children: import("react").ReactNode }) {
       generateRecipeOptions,
       fetchRecipeAiDetail,
       fetchMeasurementLogs,
+      fetchBodyProgressPhotos,
       fetchGoal,
       fetchWeightLogs,
       loading,
@@ -2825,6 +2963,10 @@ function AuthProvider({ children }: { children: import("react").ReactNode }) {
       saveProfile,
       uploadProfileAvatar,
       removeFavoriteProduct,
+      fetchWeekMealPlan,
+      upsertMealPlanEntry,
+      deleteMealPlanEntry,
+      fetchMealPlanShoppingList,
       repeatIntakesFromDay,
       searchSocialUsers,
       fetchSocialOverview,
@@ -6610,6 +6752,7 @@ function DashboardScreen({
                   <View style={styles.dashboardDesktopLeftColumn}>
                     {heroSummaryCard}
                     {macroDayCard}
+                    <WeeklyMealPlannerSection isActive={isActive} />
                   </View>
                   <View style={styles.dashboardDesktopRightColumn}>
                     {bodyTrackingCard}
@@ -6623,6 +6766,7 @@ function DashboardScreen({
               <>
                 {heroSummaryCard}
                 {macroDayCard}
+                <WeeklyMealPlannerSection isActive={isActive} />
                 {bodyTrackingCard}
                 {macroDonutBlock}
                 {intakesCard}
@@ -6669,6 +6813,299 @@ function DashboardScreen({
   );
 }
 
+function WeeklyMealPlannerSection({ isActive }: { isActive: boolean }) {
+  const auth = useAuth();
+  const todayWeekStartIso = useMemo(() => formatDateLocal(startOfWeek(new Date())), []);
+  const [weekStartIso, setWeekStartIso] = useState(todayWeekStartIso);
+  const [selectedDayIso, setSelectedDayIso] = useState(formatDateLocal(new Date()));
+  const [selectedMealType, setSelectedMealType] = useState<RecipeMealType>("lunch");
+  const [servingsInput, setServingsInput] = useState("1");
+  const [noteInput, setNoteInput] = useState("");
+  const [mealPlan, setMealPlan] = useState<MealPlanWeek | null>(null);
+  const [shoppingList, setShoppingList] = useState<MealPlanShoppingList | null>(null);
+  const [recipes, setRecipes] = useState<UserRecipe[]>([]);
+  const [favorites, setFavorites] = useState<FavoriteProduct[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  const loadPlanner = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [nextPlan, nextShopping, nextRecipes, nextFavorites] = await Promise.all([
+        auth.fetchWeekMealPlan(weekStartIso),
+        auth.fetchMealPlanShoppingList(weekStartIso),
+        auth.fetchMyRecipes({ limit: 18 }),
+        auth.fetchFavoriteProducts(18),
+      ]);
+      setMealPlan(nextPlan);
+      setShoppingList(nextShopping);
+      setRecipes(nextRecipes);
+      setFavorites(nextFavorites);
+      const currentSelectedStillVisible = nextPlan.days.some((day) => day.date === selectedDayIso);
+      if (!currentSelectedStillVisible) {
+        setSelectedDayIso(nextPlan.days[0]?.date ?? weekStartIso);
+      }
+    } catch (error) {
+      showAlert("Plan semanal", parseApiError(error));
+    } finally {
+      setLoading(false);
+    }
+  }, [auth, selectedDayIso, weekStartIso]);
+
+  useEffect(() => {
+    void loadPlanner();
+  }, [loadPlanner]);
+
+  useEffect(() => {
+    if (!isActive) {
+      return;
+    }
+    void loadPlanner();
+  }, [isActive, loadPlanner]);
+
+  const weekStartDate = useMemo(() => new Date(`${weekStartIso}T00:00:00`), [weekStartIso]);
+  const weekDays = useMemo(
+    () =>
+      Array.from({ length: 7 }, (_, index) => {
+        const day = addDays(weekStartDate, index);
+        return {
+          iso: formatDateLocal(day),
+          shortLabel: day.toLocaleDateString("es-ES", { weekday: "short" }).replace(".", ""),
+          dayLabel: day.toLocaleDateString("es-ES", { day: "numeric", month: "short" }),
+        };
+      }),
+    [weekStartDate],
+  );
+  const selectedDay = useMemo(
+    () => mealPlan?.days.find((day) => day.date === selectedDayIso) ?? null,
+    [mealPlan?.days, selectedDayIso],
+  );
+  const selectedEntry = useMemo(
+    () => selectedDay?.entries.find((entry) => entry.meal_type === selectedMealType) ?? null,
+    [selectedDay?.entries, selectedMealType],
+  );
+  const selectedDayLabel = useMemo(() => {
+    const parsed = new Date(`${selectedDayIso}T00:00:00`);
+    return parsed.toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" });
+  }, [selectedDayIso]);
+  const topRecipes = useMemo(() => recipes.slice(0, 6), [recipes]);
+  const topFavorites = useMemo(() => favorites.slice(0, 6), [favorites]);
+
+  const changeWeek = useCallback((delta: number) => {
+    const nextWeekStart = addDays(weekStartDate, delta * 7);
+    const nextIso = formatDateLocal(nextWeekStart);
+    setWeekStartIso(nextIso);
+    setSelectedDayIso(nextIso);
+  }, [weekStartDate]);
+
+  const savePlanEntry = useCallback(
+    async (input: { recipeId?: number; productId?: number }) => {
+      const servings = toOptionalNumber(servingsInput) ?? 1;
+      setSaving(true);
+      try {
+        await auth.upsertMealPlanEntry({
+          planned_date: selectedDayIso,
+          meal_type: selectedMealType,
+          recipe_id: input.recipeId,
+          product_id: input.productId,
+          servings,
+          note: noteInput.trim() || undefined,
+        });
+        await loadPlanner();
+      } catch (error) {
+        showAlert("Plan semanal", parseApiError(error));
+      } finally {
+        setSaving(false);
+      }
+    },
+    [auth, loadPlanner, noteInput, selectedDayIso, selectedMealType, servingsInput],
+  );
+
+  const removeSelectedEntry = useCallback(async () => {
+    if (!selectedEntry) {
+      return;
+    }
+    setSaving(true);
+    try {
+      await auth.deleteMealPlanEntry(selectedEntry.id);
+      await loadPlanner();
+    } catch (error) {
+      showAlert("Plan semanal", parseApiError(error));
+    } finally {
+      setSaving(false);
+    }
+  }, [auth, loadPlanner, selectedEntry]);
+
+  return (
+    <>
+      <AppCard>
+        <SectionHeader title="Plan semanal" subtitle="Organiza comidas y compras" />
+        <View style={styles.historyCalendarMonthNav}>
+          <Pressable
+            hitSlop={10}
+            onPress={() => changeWeek(-1)}
+            style={({ pressed }) => [styles.historyCalendarArrowTouch, pressed && styles.historyCalendarArrowTouchPressed]}
+          >
+            <Text style={styles.historyCalendarArrowIcon}>‹</Text>
+          </Pressable>
+          <Text style={styles.historyCalendarMonthLabel}>
+            Semana del {weekStartDate.toLocaleDateString("es-ES", { day: "numeric", month: "short" })}
+          </Text>
+          <Pressable
+            hitSlop={10}
+            onPress={() => changeWeek(1)}
+            style={({ pressed }) => [styles.historyCalendarArrowTouch, pressed && styles.historyCalendarArrowTouchPressed]}
+          >
+            <Text style={styles.historyCalendarArrowIcon}>›</Text>
+          </Pressable>
+        </View>
+
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.plannerWeekStrip}>
+          {weekDays.map((day) => {
+            const entryCount = mealPlan?.days.find((item) => item.date === day.iso)?.entries.length ?? 0;
+            const active = day.iso === selectedDayIso;
+            return (
+              <Pressable
+                key={day.iso}
+                onPress={() => setSelectedDayIso(day.iso)}
+                style={({ pressed }) => [
+                  styles.plannerDayChip,
+                  active && styles.plannerDayChipActive,
+                  pressed && styles.historyCalendarCellPressed,
+                ]}
+              >
+                <Text style={[styles.plannerDayChipEyebrow, active && styles.plannerDayChipEyebrowActive]}>{day.shortLabel}</Text>
+                <Text style={[styles.plannerDayChipTitle, active && styles.plannerDayChipTitleActive]}>{day.dayLabel}</Text>
+                <TagChip label={`${entryCount} plan`} tone={entryCount ? "accent" : "default"} />
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+
+        {loading ? <ActivityIndicator color={theme.accent} /> : null}
+
+        {!loading ? (
+          <View style={styles.plannerDayContent}>
+            <View style={styles.plannerDayHeader}>
+              <Text style={styles.plannerDayTitle}>{selectedDayLabel}</Text>
+              {selectedDay?.entries.length ? (
+                <Text style={styles.helperText}>{selectedDay.entries.length} bloque(s) planificado(s)</Text>
+              ) : null}
+            </View>
+            {selectedDay?.entries.length ? (
+              selectedDay.entries.map((entry) => (
+                <View key={entry.id} style={styles.plannerEntryRow}>
+                  <View style={styles.plannerEntryCopy}>
+                    <Text style={styles.plannerEntryMeal}>{recipeMealTypeLabel(entry.meal_type)}</Text>
+                    <Text style={styles.plannerEntryTitle}>{entry.title}</Text>
+                    <Text style={styles.helperText}>
+                      {entry.servings.toFixed(1)} raciones {entry.note ? `· ${entry.note}` : ""}
+                    </Text>
+                  </View>
+                  <TagChip label={entry.source_type === "recipe" ? "Receta" : "Favorito"} tone="warning" />
+                </View>
+              ))
+            ) : (
+              <EmptyState title="Día vacío" subtitle="Añade una receta o un favorito desde el editor rápido." />
+            )}
+          </View>
+        ) : null}
+
+        <View style={styles.plannerEditorCard}>
+          <Text style={styles.plannerEditorTitle}>Editor rápido</Text>
+          <Text style={styles.helperText}>Selecciona hueco y toca una receta o favorito para guardarlo.</Text>
+          <View style={styles.macroToggleRow}>
+            {(["breakfast", "lunch", "snack", "dinner"] as RecipeMealType[]).map((mealType) => (
+              <Pressable
+                key={mealType}
+                onPress={() => setSelectedMealType(mealType)}
+                style={[styles.macroToggleChip, selectedMealType === mealType && styles.macroToggleChipActive]}
+              >
+                <Text style={[styles.macroToggleText, selectedMealType === mealType && styles.macroToggleTextActive]}>
+                  {recipeMealTypeLabel(mealType)}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+          <InputField label="Raciones" value={servingsInput} onChangeText={setServingsInput} keyboardType="numeric" />
+          <InputField label="Nota opcional" value={noteInput} onChangeText={setNoteInput} />
+
+          {selectedEntry ? (
+            <View style={styles.plannerEditorSelectedRow}>
+              <Text style={styles.helperText}>
+                Actual: {selectedEntry.title} en {recipeMealTypeLabel(selectedMealType)}
+              </Text>
+              <SecondaryButton title="Quitar de este hueco" onPress={() => void removeSelectedEntry()} disabled={saving} />
+            </View>
+          ) : null}
+
+          <Text style={styles.plannerSectionLabel}>Recetas</Text>
+          {topRecipes.length ? (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.plannerSourceStrip}>
+              {topRecipes.map((recipe) => (
+                <Pressable
+                  key={recipe.id}
+                  onPress={() => void savePlanEntry({ recipeId: recipe.id })}
+                  style={({ pressed }) => [styles.plannerSourceCard, pressed && styles.plannerSourceCardPressed]}
+                  disabled={saving}
+                >
+                  <Text style={styles.plannerSourceTitle}>{recipe.title}</Text>
+                  <Text style={styles.plannerSourceMeta}>
+                    {recipeMealTypeLabel(recipe.meal_type)} · {Math.round(recipe.nutrition_kcal)} kcal
+                  </Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          ) : (
+            <Text style={styles.helperText}>Todavía no tienes recetas guardadas.</Text>
+          )}
+
+          <Text style={styles.plannerSectionLabel}>Favoritos</Text>
+          {topFavorites.length ? (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.plannerSourceStrip}>
+              {topFavorites.map((favorite) => (
+                <Pressable
+                  key={favorite.product.id}
+                  onPress={() => void savePlanEntry({ productId: favorite.product.id })}
+                  style={({ pressed }) => [styles.plannerSourceCard, pressed && styles.plannerSourceCardPressed]}
+                  disabled={saving}
+                >
+                  <Text style={styles.plannerSourceTitle}>{favorite.product.name}</Text>
+                  <Text style={styles.plannerSourceMeta}>{Math.round(favorite.product.kcal)} kcal por base</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          ) : (
+            <Text style={styles.helperText}>Marca favoritos desde buscar alimentos para reutilizarlos aquí.</Text>
+          )}
+        </View>
+      </AppCard>
+
+      <AppCard>
+        <SectionHeader title="Lista de la compra" subtitle="Generada a partir del plan" actionLabel="Recargar" onAction={() => void loadPlanner()} />
+        {loading ? <ActivityIndicator color={theme.accent} /> : null}
+        {!loading && !shoppingList?.items.length ? (
+          <EmptyState title="Nada que comprar" subtitle="Planifica alguna comida y te agrego ingredientes automáticamente." />
+        ) : null}
+        {!loading && shoppingList?.items.length
+          ? shoppingList.items.map((item) => (
+              <View key={`${item.source_type}-${item.name}-${item.unit ?? "na"}`} style={styles.plannerShoppingRow}>
+                <View style={styles.plannerShoppingBullet} />
+                <View style={styles.plannerShoppingCopy}>
+                  <Text style={styles.plannerShoppingTitle}>{item.name}</Text>
+                  <Text style={styles.helperText}>
+                    {item.quantity != null ? `${item.quantity.toFixed(2)} ${item.unit ?? ""}`.trim() : "Cantidad libre"} · {item.occurrences} uso(s)
+                  </Text>
+                </View>
+                <TagChip label={item.source_type === "ingredient" ? "Ingrediente" : "Producto"} />
+              </View>
+            ))
+          : null}
+      </AppCard>
+    </>
+  );
+}
+
 function BodyProgressScreen() {
   const { width } = useWindowDimensions();
   const auth = useAuth();
@@ -6691,6 +7128,12 @@ function BodyProgressScreen() {
   const [summary, setSummary] = useState<BodySummary | null>(null);
   const [weightLogs, setWeightLogs] = useState<BodyWeightLog[]>([]);
   const [measurementLogs, setMeasurementLogs] = useState<BodyMeasurementLog[]>([]);
+  const [bodyPhotos, setBodyPhotos] = useState<BodyProgressPhoto[]>([]);
+  const [savingBodyPhoto, setSavingBodyPhoto] = useState(false);
+  const [bodyPhotoNote, setBodyPhotoNote] = useState("");
+  const [bodyPhotoPrivate, setBodyPhotoPrivate] = useState(true);
+  const [compareLeftPhotoId, setCompareLeftPhotoId] = useState<number | null>(null);
+  const [compareRightPhotoId, setCompareRightPhotoId] = useState<number | null>(null);
 
   const [weightInput, setWeightInput] = useState("");
   const [weightNote, setWeightNote] = useState("");
@@ -6701,20 +7144,24 @@ function BodyProgressScreen() {
   const reload = useCallback(async () => {
     setLoading(true);
     try {
-      const [nextSummary, nextWeights, nextMeasurements] = await Promise.all([
+      const [nextSummary, nextWeights, nextMeasurements, nextPhotos] = await Promise.all([
         auth.fetchBodySummary(),
         auth.fetchWeightLogs(180),
         auth.fetchMeasurementLogs(180),
+        auth.fetchBodyProgressPhotos(24),
       ]);
       setSummary(nextSummary);
       setWeightLogs(nextWeights);
       setMeasurementLogs(nextMeasurements);
+      setBodyPhotos(nextPhotos);
+      setCompareLeftPhotoId((current) => current ?? nextPhotos.at(-1)?.id ?? null);
+      setCompareRightPhotoId((current) => current ?? nextPhotos[0]?.id ?? null);
     } catch (error) {
       showAlert("Progreso corporal", parseApiError(error));
     } finally {
       setLoading(false);
     }
-  }, [auth.fetchBodySummary, auth.fetchMeasurementLogs, auth.fetchWeightLogs]);
+  }, [auth.fetchBodyProgressPhotos, auth.fetchBodySummary, auth.fetchMeasurementLogs, auth.fetchWeightLogs]);
 
   useEffect(() => {
     void reload();
@@ -6882,6 +7329,81 @@ function BodyProgressScreen() {
     }
   };
 
+  const persistBodyProgressPhoto = useCallback(
+    async (asset: ImagePicker.ImagePickerAsset) => {
+      if (!asset.uri) {
+        return;
+      }
+      setSavingBodyPhoto(true);
+      try {
+        const maxSide = Math.max(asset.width ?? 0, asset.height ?? 0);
+        const actions: ImageManipulator.Action[] = [];
+        if (maxSide > 1440 && asset.width && asset.height) {
+          const scale = 1440 / maxSide;
+          actions.push({
+            resize: {
+              width: Math.max(1, Math.round(asset.width * scale)),
+              height: Math.max(1, Math.round(asset.height * scale)),
+            },
+          });
+        }
+        const optimized = await ImageManipulator.manipulateAsync(asset.uri, actions, {
+          compress: 0.72,
+          format: ImageManipulator.SaveFormat.JPEG,
+          base64: true,
+        });
+        if (!optimized.base64) {
+          throw new Error("No se pudo preparar la imagen.");
+        }
+        const created = await auth.createBodyProgressPhoto({
+          image_url: `data:image/jpeg;base64,${optimized.base64}`,
+          note: bodyPhotoNote.trim() || undefined,
+          is_private: bodyPhotoPrivate,
+        });
+        setBodyPhotos((current) => [created, ...current]);
+        setCompareRightPhotoId(created.id);
+        setCompareLeftPhotoId((current) => current ?? created.id);
+        setBodyPhotoNote("");
+      } catch (error) {
+        showAlert("Fotos de progreso", parseApiError(error));
+      } finally {
+        setSavingBodyPhoto(false);
+      }
+    },
+    [auth, bodyPhotoNote, bodyPhotoPrivate],
+  );
+
+  const pickBodyPhotoFromLibrary = useCallback(async () => {
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      showAlert("Fotos de progreso", "Permite acceso a la galería para guardar comparativas.");
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      quality: 0.85,
+    });
+    if (!result.canceled && result.assets[0]) {
+      await persistBodyProgressPhoto(result.assets[0]);
+    }
+  }, [persistBodyProgressPhoto]);
+
+  const pickBodyPhotoFromCamera = useCallback(async () => {
+    const permission = await ImagePicker.requestCameraPermissionsAsync();
+    if (!permission.granted) {
+      showAlert("Fotos de progreso", "Permite acceso a la cámara para capturar progreso.");
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      allowsEditing: true,
+      quality: 0.85,
+    });
+    if (!result.canceled && result.assets[0]) {
+      await persistBodyProgressPhoto(result.assets[0]);
+    }
+  }, [persistBodyProgressPhoto]);
+
   const openBodyActionMenu = useCallback(() => {
     if (bodyActionMenuOpen) {
       return;
@@ -6996,6 +7518,14 @@ function BodyProgressScreen() {
 
   const recentWeights = useMemo(() => weightLogs.slice(0, 6), [weightLogs]);
   const recentMeasurements = useMemo(() => measurementLogs.slice(0, 4), [measurementLogs]);
+  const compareLeftPhoto = useMemo(
+    () => bodyPhotos.find((photo) => photo.id === compareLeftPhotoId) ?? null,
+    [bodyPhotos, compareLeftPhotoId],
+  );
+  const compareRightPhoto = useMemo(
+    () => bodyPhotos.find((photo) => photo.id === compareRightPhotoId) ?? null,
+    [bodyPhotos, compareRightPhotoId],
+  );
   const showBodySkeleton = loading && !summary && weightLogs.length === 0 && measurementLogs.length === 0;
   const bodyActionMenuTranslateY = bodyActionMenuAnim.interpolate({
     inputRange: [0, 1],
@@ -7225,6 +7755,59 @@ function BodyProgressScreen() {
                   {new Date(entry.created_at).toLocaleDateString()} · Cintura {entry.waist_cm ?? "N/D"} · Cuello{" "}
                   {entry.neck_cm ?? "N/D"} · Cadera {entry.hip_cm ?? "N/D"}
                 </Text>
+              ))}
+            </View>
+          ) : null}
+        </AppCard>
+
+        <AppCard style={useDesktopLayout ? styles.desktopSectionGridFull : undefined}>
+          <SectionHeader title="Fotos de progreso" subtitle="Galería comparativa antes / después" actionLabel="Recargar" onAction={() => void reload()} />
+          <View style={styles.bodyPhotoActionRow}>
+            <SecondaryButton title="Subir desde galería" onPress={() => void pickBodyPhotoFromLibrary()} disabled={savingBodyPhoto} />
+            <SecondaryButton title="Usar cámara" onPress={() => void pickBodyPhotoFromCamera()} disabled={savingBodyPhoto} />
+          </View>
+          <InputField label="Nota de la foto" value={bodyPhotoNote} onChangeText={setBodyPhotoNote} />
+          <Pressable onPress={() => setBodyPhotoPrivate((current) => !current)} style={[styles.methodChip, bodyPhotoPrivate && styles.methodChipActive]}>
+            <Text style={[styles.methodChipText, bodyPhotoPrivate && styles.methodChipTextActive]}>
+              {bodyPhotoPrivate ? "Privada" : "Lista para compartir más tarde"}
+            </Text>
+          </Pressable>
+          {savingBodyPhoto ? <ActivityIndicator color={theme.accent} /> : null}
+
+          {compareLeftPhoto && compareRightPhoto ? (
+            <View style={styles.bodyPhotoCompareGrid}>
+              {[
+                { label: "Antes", photo: compareLeftPhoto },
+                { label: "Después", photo: compareRightPhoto },
+              ].map((item) => (
+                <View key={`${item.label}-${item.photo.id}`} style={styles.bodyPhotoCompareCard}>
+                  <Text style={styles.bodyPhotoCompareLabel}>{item.label}</Text>
+                  <Image source={{ uri: item.photo.image_url }} style={styles.bodyPhotoCompareImage} />
+                  <Text style={styles.bodyPhotoCompareDate}>{new Date(item.photo.created_at).toLocaleDateString()}</Text>
+                  <Text style={styles.helperText}>{item.photo.note || "Sin nota"}</Text>
+                </View>
+              ))}
+            </View>
+          ) : (
+            <EmptyState title="Sin comparativa" subtitle="Sube al menos dos fotos para activar el antes/después." />
+          )}
+
+          {bodyPhotos.length ? (
+            <View style={styles.bodyPhotoGalleryGrid}>
+              {bodyPhotos.map((photo, index) => (
+                <View key={photo.id} style={styles.bodyPhotoThumbCard}>
+                  <Image source={{ uri: photo.image_url }} style={styles.bodyPhotoThumbImage} />
+                  <Text style={styles.bodyPhotoThumbDate}>{new Date(photo.created_at).toLocaleDateString()}</Text>
+                  <View style={styles.bodyPhotoThumbActions}>
+                    <Pressable onPress={() => setCompareLeftPhotoId(photo.id)} style={styles.bodyPhotoThumbAction}>
+                      <Text style={styles.bodyPhotoThumbActionText}>Antes</Text>
+                    </Pressable>
+                    <Pressable onPress={() => setCompareRightPhotoId(photo.id)} style={styles.bodyPhotoThumbAction}>
+                      <Text style={styles.bodyPhotoThumbActionText}>Después</Text>
+                    </Pressable>
+                  </View>
+                  {index === 0 ? <TagChip label="Más reciente" tone="accent" /> : null}
+                </View>
               ))}
             </View>
           ) : null}
@@ -20735,6 +21318,241 @@ const styles = StyleSheet.create({
   },
   recipeRowRemoveText: {
     color: theme.muted,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  plannerWeekStrip: {
+    gap: 10,
+    paddingBottom: 4,
+  },
+  plannerDayChip: {
+    minWidth: 108,
+    borderWidth: 1,
+    borderColor: theme.border,
+    borderRadius: 18,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    gap: 6,
+    backgroundColor: theme.panelSoft,
+  },
+  plannerDayChipActive: {
+    borderColor: theme.accent,
+    backgroundColor: theme.accentSoft,
+  },
+  plannerDayChipEyebrow: {
+    color: theme.muted,
+    fontSize: 11,
+    fontWeight: "800",
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+  },
+  plannerDayChipEyebrowActive: {
+    color: theme.text,
+  },
+  plannerDayChipTitle: {
+    color: theme.text,
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  plannerDayChipTitleActive: {
+    color: theme.text,
+  },
+  plannerDayContent: {
+    gap: 10,
+    marginTop: 12,
+  },
+  plannerDayHeader: {
+    gap: 4,
+  },
+  plannerDayTitle: {
+    color: theme.text,
+    fontSize: 18,
+    fontWeight: "800",
+    textTransform: "capitalize",
+  },
+  plannerEntryRow: {
+    borderWidth: 1,
+    borderColor: theme.border,
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    backgroundColor: theme.panelSoft,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  plannerEntryCopy: {
+    flex: 1,
+    gap: 3,
+  },
+  plannerEntryMeal: {
+    color: theme.accent,
+    fontSize: 12,
+    fontWeight: "800",
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+  },
+  plannerEntryTitle: {
+    color: theme.text,
+    fontSize: 15,
+    fontWeight: "800",
+  },
+  plannerEditorCard: {
+    borderWidth: 1,
+    borderColor: theme.border,
+    borderRadius: 18,
+    backgroundColor: theme.panelMuted,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    gap: 10,
+    marginTop: 14,
+  },
+  plannerEditorTitle: {
+    color: theme.text,
+    fontSize: 16,
+    fontWeight: "800",
+  },
+  plannerEditorSelectedRow: {
+    gap: 8,
+  },
+  plannerSectionLabel: {
+    color: theme.text,
+    fontSize: 13,
+    fontWeight: "800",
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+    marginTop: 4,
+  },
+  plannerSourceStrip: {
+    gap: 10,
+    paddingBottom: 2,
+  },
+  plannerSourceCard: {
+    width: 190,
+    borderWidth: 1,
+    borderColor: theme.border,
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    gap: 5,
+    backgroundColor: theme.panelSoft,
+  },
+  plannerSourceCardPressed: {
+    opacity: 0.94,
+    transform: [{ scale: 0.99 }],
+  },
+  plannerSourceTitle: {
+    color: theme.text,
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  plannerSourceMeta: {
+    color: theme.muted,
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  plannerShoppingRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.border,
+    paddingVertical: 10,
+  },
+  plannerShoppingBullet: {
+    width: 10,
+    height: 10,
+    borderRadius: 999,
+    backgroundColor: theme.accent,
+  },
+  plannerShoppingCopy: {
+    flex: 1,
+    gap: 2,
+  },
+  plannerShoppingTitle: {
+    color: theme.text,
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  bodyPhotoActionRow: {
+    flexDirection: Platform.OS === "web" ? "row" : "column",
+    gap: 10,
+  },
+  bodyPhotoCompareGrid: {
+    flexDirection: Platform.OS === "web" ? "row" : "column",
+    gap: 12,
+    marginTop: 6,
+  },
+  bodyPhotoCompareCard: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: theme.border,
+    borderRadius: 18,
+    padding: 12,
+    gap: 8,
+    backgroundColor: theme.panelSoft,
+  },
+  bodyPhotoCompareLabel: {
+    color: theme.accent,
+    fontSize: 12,
+    fontWeight: "800",
+    textTransform: "uppercase",
+    letterSpacing: 0.8,
+  },
+  bodyPhotoCompareImage: {
+    width: "100%",
+    aspectRatio: 3 / 4,
+    borderRadius: 14,
+    backgroundColor: theme.panelMuted,
+  },
+  bodyPhotoCompareDate: {
+    color: theme.text,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  bodyPhotoGalleryGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 12,
+    marginTop: 8,
+  },
+  bodyPhotoThumbCard: {
+    width: Platform.OS === "web" ? "31%" : "47%",
+    borderWidth: 1,
+    borderColor: theme.border,
+    borderRadius: 16,
+    padding: 10,
+    gap: 8,
+    backgroundColor: theme.panelSoft,
+  },
+  bodyPhotoThumbImage: {
+    width: "100%",
+    aspectRatio: 3 / 4,
+    borderRadius: 12,
+    backgroundColor: theme.panelMuted,
+  },
+  bodyPhotoThumbDate: {
+    color: theme.text,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  bodyPhotoThumbActions: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  bodyPhotoThumbAction: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: theme.border,
+    borderRadius: 999,
+    paddingVertical: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: theme.panel,
+  },
+  bodyPhotoThumbActionText: {
+    color: theme.text,
     fontSize: 12,
     fontWeight: "700",
   },
