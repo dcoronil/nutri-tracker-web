@@ -361,6 +361,63 @@ class UserRecipeRead(UserRecipeUpsert):
     preferred_serving: ProductPreference | None = None
 
 
+class MealPlanEntryUpsert(BaseModel):
+    planned_date: date
+    meal_type: RecipeMealType
+    slot_index: int = Field(default=0, ge=0, le=5)
+    recipe_id: int | None = Field(default=None, ge=1)
+    product_id: int | None = Field(default=None, ge=1)
+    servings: float = Field(default=1, gt=0, le=20)
+    note: str | None = Field(default=None, max_length=280)
+
+    @model_validator(mode="after")
+    def validate_reference(self) -> "MealPlanEntryUpsert":
+        if bool(self.recipe_id) == bool(self.product_id):
+            raise ValueError("Debes indicar exactamente una referencia: receta o producto.")
+        return self
+
+
+class MealPlanEntryRead(BaseModel):
+    id: int
+    planned_date: date
+    meal_type: RecipeMealType
+    slot_index: int
+    servings: float
+    note: str | None = None
+    title: str
+    source_type: Literal["recipe", "product"]
+    recipe: UserRecipeRead | None = None
+    product: ProductRead | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class MealPlanDayRead(BaseModel):
+    date: date
+    entries: list[MealPlanEntryRead] = Field(default_factory=list)
+
+
+class MealPlanWeekResponse(BaseModel):
+    week_start: date
+    week_end: date
+    days: list[MealPlanDayRead] = Field(default_factory=list)
+
+
+class ShoppingListItem(BaseModel):
+    name: str
+    unit: str | None = None
+    quantity: float | None = None
+    occurrences: int = 0
+    source_type: Literal["ingredient", "product"]
+
+
+class MealPlanShoppingListResponse(BaseModel):
+    week_start: date
+    week_end: date
+    planned_entry_count: int = 0
+    items: list[ShoppingListItem] = Field(default_factory=list)
+
+
 class RecipeGenerateRequest(BaseModel):
     meal_type: RecipeMealType
     target_kcal: float | None = Field(default=None, ge=0)
