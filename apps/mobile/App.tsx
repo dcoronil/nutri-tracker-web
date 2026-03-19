@@ -945,6 +945,15 @@ function isLocalWebHost(host: string): boolean {
   return host === "localhost" || host === "127.0.0.1";
 }
 
+function isLoopbackApiBaseUrl(baseUrl: string): boolean {
+  try {
+    const parsed = new URL(baseUrl);
+    return isLocalWebHost(parsed.hostname.trim().toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
 function validateResolvedApiBaseUrl(baseUrl: string): string | null {
   if (!baseUrl) {
     return "API base URL no configurada. Define EXPO_PUBLIC_API_BASE_URL para la web desplegada.";
@@ -957,6 +966,10 @@ function validateResolvedApiBaseUrl(baseUrl: string): string | null {
   const currentOrigin = window.location.origin.replace(/\/+$/, "");
   const currentHost = window.location.hostname.trim().toLowerCase();
   const normalized = baseUrl.replace(/\/+$/, "");
+
+  if (!isLocalWebHost(currentHost) && isLoopbackApiBaseUrl(normalized)) {
+    return "La API configurada apunta a localhost. En una web desplegada eso falla porque el navegador intenta llamar al localhost del usuario. Usa la URL publica del backend o deja que la app use su mismo dominio.";
+  }
 
   if (window.location.protocol === "https:" && normalized.startsWith("http://")) {
     return "La API configurada usa HTTP y la web está en HTTPS. Usa una URL pública HTTPS para el backend.";
@@ -1140,16 +1153,24 @@ function getExpoHostIp(): string | null {
 
 function inferApiBaseUrl(): string {
   const envUrl = normalizeBaseUrl(process.env.EXPO_PUBLIC_API_BASE_URL ?? "");
-  if (envUrl) {
-    return envUrl;
-  }
 
   if (Platform.OS === "web" && typeof window !== "undefined") {
-    const host = window.location.hostname;
+    const currentOrigin = window.location.origin.replace(/\/+$/, "");
+    const host = window.location.hostname.trim().toLowerCase();
+    if (envUrl) {
+      if (!isLocalWebHost(host) && isLoopbackApiBaseUrl(envUrl)) {
+        return currentOrigin;
+      }
+      return envUrl;
+    }
     if (host && !isLocalWebHost(host)) {
-      return "";
+      return currentOrigin;
     }
     return "http://localhost:8000";
+  }
+
+  if (envUrl) {
+    return envUrl;
   }
 
   const hostIp = getExpoHostIp();
