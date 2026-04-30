@@ -92,7 +92,6 @@ Los siguientes campos están etiquetados con PII.Sensitive en OpenMetadata:
 | user_profile | height_cm | Dato de salud |
 | user_profile | body_fat_percent | Dato de salud sensible |
 
-📸 [Insertar captura: vista de la tabla user_account con las columnas y los tags PII visibles]
 
 ---
 
@@ -124,10 +123,6 @@ Los siguientes campos están etiquetados con PII.Sensitive en OpenMetadata:
 Dentro del glosario, clic sobre el nombre del término.
 
 Se abre la vista con su definición completa, sinónimos (si los hay) y la vinculación con los campos del diccionario de datos.
-
-📸 [Insertar captura: listado del glosario con los 10 términos visibles]
-
-📸 [Insertar captura: vista interior de un término, por ejemplo "Usuario activo"]
 
 ---
 
@@ -179,8 +174,6 @@ Estos 6 Test Cases cubren las 5 dimensiones de calidad requeridas por la normati
 | Validez (rango) | kcal_column_values_to_be_between |
 | Unicidad | email_column_values_to_be_unique |
 | Actualidad | created_at_no_fecha_futura |
-
-📸 [Insertar captura: 07_quality_test_cases.png — vista de Observabilidad con los 6 Casos de Prueba en estado Éxito, tal como aparece en localhost:8585/data-quality/test-cases]
 
 ---
 
