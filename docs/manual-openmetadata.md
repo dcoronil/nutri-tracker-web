@@ -1,284 +1,156 @@
-# Manual de Usuario — OpenMetadata
+Manual de Usuario — OpenMetadata
 
-Este manual explica de forma sencilla cómo acceder y moverse por OpenMetadata dentro del trabajo de calidad de datos aplicado a NutriTracker. También recoge dónde se pueden consultar las tablas modeladas, el glosario y las reglas de calidad configuradas.
+Índice
 
-## Índice
+Acceso a OpenMetadata
+Navegación por la interfaz
+Ver las entidades modeladas (tablas)
+Ver el glosario de términos
+Ver y gestionar las reglas de calidad
+Cómo ejecutar los tests de calidad
+Cómo añadir un nuevo término al glosario
+Cómo añadir una nueva regla de calidad
 
-1. Acceso a OpenMetadata  
-2. Navegación por la interfaz  
-3. Ver las entidades modeladas  
-4. Ver el glosario de términos  
-5. Ver y gestionar las reglas de calidad  
-6. Cómo ejecutar los tests de calidad  
-7. Cómo añadir un nuevo término al glosario  
-8. Cómo añadir una nueva regla de calidad  
 
----
-
-## 1. Acceso a OpenMetadata
-
-OpenMetadata es la herramienta utilizada en este proyecto para documentar y controlar los datos principales de NutriTracker. En ella se han registrado las entidades de la base de datos, el glosario de términos y las reglas de calidad del dato.
-
-La instancia se ejecuta en local y se accede desde el navegador mediante la siguiente dirección:
-
-```text
+1. Acceso a OpenMetadata
+OpenMetadata es la plataforma de gobernanza del dato utilizada en este proyecto para documentar las entidades, el glosario y las reglas de calidad de NutriTracker.
+URL de acceso:
 http://localhost:8585
-```
+Credenciales:
+usuario: rsantervastorres@al.uloyola.es
+contraseña: "contactar con ese usuario para conocer la contraseña"
 
-Por seguridad, las credenciales no se incluyen directamente en este documento. Para acceder a la instancia, se debe contactar con el responsable del entorno de OpenMetadata.
+OpenMetadata debe estar arrancado mediante Docker antes de acceder. Si la página no carga, ejecuta docker compose up -d en el directorio de instalación.
 
-Antes de entrar, OpenMetadata debe estar levantado mediante Docker. Si la página no carga, se puede arrancar desde el directorio de instalación con:
 
-```text
-docker compose up -d
-```
+2. Navegación por la interfaz
+Una vez dentro, la barra lateral izquierda es el punto de entrada a todas las funciones. La interfaz está en español:
+Sección en la interfazPara qué sirve🏠 InicioPanel principal con actividad reciente y activos destacados🔍 ExplorarBuscar y navegar todas las tablas registradas de la BD🔗 LinajeVer las relaciones y flujo de datos entre tablas👁️ ObservabilidadAcceder a los Tests de calidad (Casos de Prueba y Suites de Pruebas)📊 PerspectivasDashboards y métricas de cobertura de calidad🌐 DominiosOrganización de activos por dominio de negocio🏛️ GobernarGlosario de términos, clasificaciones y políticas⚙️ ConfiguracionesServicios de BD, usuarios, roles y conexiones
 
----
+💡 Importante: En esta instalación, las reglas de calidad se encuentran en Observabilidad, no en una pestaña dentro de las tablas. La URL directa es: http://localhost:8585/data-quality/test-cases
 
-## 2. Navegación por la interfaz
 
-Una vez dentro de OpenMetadata, la mayor parte del trabajo se realiza desde la barra lateral izquierda. Desde ahí se puede acceder a las tablas, al glosario, al linaje y a las reglas de calidad.
+3. Ver las entidades modeladas (tablas)
+Cómo acceder
 
-| Sección en la interfaz | Para qué sirve |
-|---|---|
-| Inicio | Muestra el panel principal con actividad reciente y activos destacados. |
-| Explorar | Permite buscar y consultar las tablas registradas de la base de datos. |
-| Linaje | Muestra las relaciones y el flujo de datos entre tablas. |
-| Observabilidad | Permite consultar los tests de calidad y sus resultados. |
-| Perspectivas | Muestra métricas y paneles relacionados con la cobertura de calidad. |
-| Dominios | Organiza los activos de datos por áreas o dominios de negocio. |
-| Gobernar | Contiene el glosario, clasificaciones y políticas. |
-| Configuraciones | Permite gestionar servicios, usuarios, roles y conexiones. |
+Clic en Explorar en la barra lateral izquierda.
+En el panel que se abre, selecciona la categoría Tables.
+Verás el listado de todas las tablas descubiertas de la base de datos PostgreSQL de NutriTracker.
 
-En esta instalación, las reglas de calidad se consultan desde **Observabilidad**, no directamente desde la pestaña de cada tabla. La ruta directa es:
+Tablas registradas en NutriTracker
+TablaDescripciónuser_accountIdentidad y credenciales de los usuarios registradosuser_profileMétricas físicas del usuario (peso, altura, IMC)productCatálogo maestro de alimentos con sus macronutrientesintakeRegistros de consumo de alimentos por usuario y fechadaily_goalObjetivos calóricos y nutricionales diarios por usuariomeal_plan_entryEntradas del plan dietético estructuradobody_weight_logHistórico de peso corporal del usuario
+Cómo ver el detalle de una tabla
 
-```text
+Clic sobre el nombre de la tabla (por ejemplo, intake).
+Se abre la vista de detalle con las siguientes pestañas:
+
+Schema → columnas, tipos de dato, descripciones y tags PII
+Activity → historial de cambios
+Sample Data → muestra de datos reales (si la ingesta lo permite)
+Lineage → relaciones con otras tablas
+
+
+
+Campos sensibles (PII) marcados
+Los siguientes campos están etiquetados con PII.Sensitive en OpenMetadata:
+TablaCampoMotivouser_accountemailDato identificativo personaluser_accountpassword_hashCredencial de seguridaduser_profileweight_kgDato de saluduser_profileheight_cmDato de saluduser_profilebody_fat_percentDato de salud sensible
+
+📸 [Insertar captura: vista de la tabla user_account con las columnas y los tags PII visibles]
+
+
+4. Ver el glosario de términos
+Cómo acceder
+
+En la barra lateral izquierda, clic en Gobernar.
+Selecciona Glosario (o Glossary).
+Verás el glosario "Glosario NutriTracker" con todos los términos definidos.
+
+Términos definidos
+TérminoDefiniciónAlimento validadoProducto cuyo contenido nutricional ha sido contrastado y marcado como fiable (product.is_verified = true)Dieta activaConfiguración dietética vigente para un usuario en un periodo activo (tabla daily_goal donde date = fecha actual)IMCÍndice de Masa Corporal calculado a partir de peso y altura (user_profile.bmi)Ingesta registradaEntrada que documenta el consumo de un alimento por un usuario en una fecha y hora determinadas (tabla intake)MacronutrienteNutriente principal expresado en gramos: product.protein_g, product.carbs_g, product.fat_gObjetivo calóricoNúmero de kilocalorías diarias recomendadas a un usuario según su perfil (daily_goal.kcal_goal)Plan dietéticoConjunto estructurado de recomendaciones alimentarias asociadas a un objetivo (tabla meal_plan_entry)Sesión de usuarioPeriodo operativo en el que el usuario interactúa con el sistema (tabla user_account, metadatos de acceso)Usuario activoUsuario con al menos una ingesta en los últimos 30 días y cuenta no bloqueada (user_account.is_active + actividad en intake)Valor nutricionalConjunto de calorías y macronutrientes por cada 100g de un alimento (tabla product: kcal, protein_g, etc.)
+Cómo ver el detalle de un término
+
+Dentro del glosario, clic sobre el nombre del término.
+Se abre la vista con su definición completa, sinónimos (si los hay) y la vinculación con los campos del diccionario de datos.
+
+
+📸 [Insertar captura: listado del glosario con los 10 términos visibles]
+
+
+📸 [Insertar captura: vista interior de un término, por ejemplo "Usuario activo"]
+
+
+5. Ver y gestionar las reglas de calidad
+Cómo acceder a los Tests de calidad
+Ruta de acceso:
+Menú lateral izquierdo → Observabilidad → (se despliega) → aparece la sección de Tests
+O directamente por URL:
 http://localhost:8585/data-quality/test-cases
-```
+Una vez dentro verás dos pestañas:
 
----
+Casos de Prueba → listado de todos los Test Cases individuales con su estado
+Suites de Pruebas → agrupaciones de Test Cases por conjunto
 
-## 3. Ver las entidades modeladas
+Dashboard de calidad
+En la parte superior de Observabilidad aparece un resumen visual:
+MétricaValor actualTotal de Pruebas6 (tras añadir los 2 pendientes)Success🟢 todos en verdeActivos de Datos Saludables3 tablas cubiertasCobertura de activos de datos~12.5% (se incrementa al añadir más tests)
+Casos de Prueba configurados en NutriTracker
+EstadoNombre del Test CaseTablaColumnaÚltima ejecución✅ Éxitoquantity_g_column_values_to_be_not_null_bhd_spublic.intakequantity_g28 abril 2026✅ Éxitokcal_column_values_to_be_between_q_s_50public.productkcal28 abril 2026✅ Éxitoemail_column_values_to_match_regex_c_kilpublic.user_accountemail28 abril 2026✅ Éxitoemail_column_values_to_be_unique_gu_9_ypublic.user_accountemail28 abril 2026✅ Éxitocreated_at_no_fecha_futurapublic.intakecreated_at28 abril 2026✅ Éxitoemail_no_nulopublic.user_accountemail28 abril 2026
+Estos 6 Test Cases cubren las 5 dimensiones de calidad requeridas por la normativa:
+DimensiónTest Case que la cubreCompletitudquantity_g_column_values_to_be_not_null · email_no_nuloValidez (formato)email_column_values_to_match_regexValidez (rango)kcal_column_values_to_be_betweenUnicidademail_column_values_to_be_uniqueActualidadcreated_at_no_fecha_futura
 
-Las entidades modeladas son las tablas principales de NutriTracker que han sido registradas en OpenMetadata. Estas tablas representan la información más importante de la aplicación: usuarios, perfiles físicos, alimentos, ingestas y objetivos nutricionales.
+📸 [Insertar captura: 07_quality_test_cases.png — vista de Observabilidad con los 6 Casos de Prueba en estado Éxito, tal como aparece en localhost:8585/data-quality/test-cases]
 
-### Cómo acceder
 
-1. Clic en **Explorar** en la barra lateral izquierda.
-2. Seleccionar la categoría **Tables**.
-3. Se mostrará el listado de tablas descubiertas desde la base de datos PostgreSQL de NutriTracker.
+6. Cómo ejecutar los tests de calidad
 
-### Tablas registradas en NutriTracker
+Ve a Observabilidad en el menú lateral izquierdo.
+Verás directamente el listado de Casos de Prueba con su estado actual.
+Para ejecutar un test individual: clic en los tres puntos ⋮ a la derecha del Test Case → "Ejecutar".
+Para ejecutar todos: ve a la pestaña Suites de Pruebas, abre el suite y busca el botón "Ejecutar todos".
+El resultado aparece en la columna Estado:
 
-| Tabla | Descripción |
-|---|---|
-| `user_account` | Guarda la identidad y credenciales de los usuarios registrados. |
-| `user_profile` | Almacena métricas físicas del usuario, como peso, altura o IMC. |
-| `product` | Contiene el catálogo de alimentos con sus calorías y macronutrientes. |
-| `intake` | Registra los alimentos consumidos por cada usuario y la fecha de consumo. |
-| `daily_goal` | Guarda los objetivos calóricos y nutricionales diarios de cada usuario. |
-| `meal_plan_entry` | Contiene entradas del plan dietético estructurado. |
-| `body_weight_log` | Guarda el histórico de peso corporal del usuario. |
+🟢 Éxito → el dato cumple la regla
+🔴 Fallido → hay registros que violan la regla
+⚪ Sin ejecución → el test no se ha ejecutado todavía
 
-### Cómo ver el detalle de una tabla
 
-Para consultar una tabla concreta, por ejemplo `intake`, se hace clic sobre su nombre en el listado de tablas.
 
-Dentro de la vista de detalle se pueden consultar varias pestañas:
 
-| Pestaña | Contenido |
-|---|---|
-| Schema | Columnas, tipos de datos, descripciones y etiquetas. |
-| Activity | Historial de cambios realizados sobre la entidad. |
-| Sample Data | Muestra de datos reales, si la configuración lo permite. |
-| Lineage | Relaciones de la tabla con otros activos de datos. |
+7. Cómo añadir un nuevo término al glosario
 
-### Campos sensibles marcados
+Ve a Gobernar → Glosario en el menú lateral izquierdo.
+Abre el glosario "Glosario NutriTracker".
+Clic en el botón "Añadir término" (esquina superior derecha).
+Rellena los campos:
 
-Algunos campos contienen información personal o relacionada con la salud del usuario. Por ello, se han marcado como sensibles dentro de OpenMetadata.
+Nombre: nombre del término (ej: Porción estándar)
+Descripción: definición precisa y sin ambigüedad
+Sinónimos: sinónimos si los hay (opcional)
+Términos relacionados: otros términos del glosario relacionados (opcional)
 
-| Tabla | Campo | Motivo |
-|---|---|---|
-| `user_account` | `email` | Dato identificativo personal. |
-| `user_account` | `password_hash` | Credencial sensible de seguridad. |
-| `user_profile` | `weight_kg` | Dato relacionado con la salud del usuario. |
-| `user_profile` | `height_cm` | Dato relacionado con la salud del usuario. |
-| `user_profile` | `body_fat_percent` | Dato corporal sensible. |
 
-**Captura recomendada:** vista de la tabla `user_account` o `user_profile` con las columnas y etiquetas sensibles visibles.
+Clic en "Guardar".
+Para vincular el término a una columna: ve a Explorar → abre la tabla → selecciona la columna → en el panel de Etiquetas, añade el término del glosario.
 
----
 
-## 4. Ver el glosario de términos
+8. Cómo añadir una nueva regla de calidad
 
-El glosario sirve para definir de forma común los conceptos principales del dominio de NutriTracker. De esta forma, tanto la parte técnica como la parte funcional entienden los términos de la misma manera.
+Ve a Observabilidad en el menú lateral izquierdo.
+Clic en el botón azul "Añadir Caso de Prueba" (esquina superior derecha).
+Rellena los campos:
 
-### Cómo acceder
+Tabla: selecciona la tabla (ej: nutritracker-db.nutri_tracker.public.product)
+Columna: selecciona la columna (ej: kcal)
+Tipo de prueba: selecciona el tipo de validación:
 
-1. En la barra lateral izquierda, hacer clic en **Gobernar**.
-2. Seleccionar **Glosario**.
-3. Abrir el glosario llamado **Glosario NutriTracker**.
 
-### Términos definidos
 
-| Término | Definición |
-|---|---|
-| Alimento validado | Producto cuyo contenido nutricional ha sido revisado y marcado como fiable. |
-| Dieta activa | Configuración dietética vigente para un usuario en una fecha concreta. |
-| IMC | Índice de Masa Corporal calculado a partir del peso y la altura del usuario. |
-| Ingesta registrada | Registro que indica qué alimento ha consumido un usuario y en qué momento. |
-| Macronutriente | Nutriente principal expresado en gramos, como proteínas, carbohidratos o grasas. |
-| Objetivo calórico | Número de kilocalorías diarias recomendadas para un usuario. |
-| Plan dietético | Conjunto de recomendaciones alimentarias organizadas para un usuario. |
-| Sesión de usuario | Periodo en el que el usuario interactúa con la aplicación. |
-| Usuario activo | Usuario que ha tenido actividad reciente en la aplicación y cuya cuenta no está bloqueada. |
-| Valor nutricional | Conjunto de calorías y macronutrientes asociados a un alimento. |
+Tipo de pruebaCuándo usarlocolumnValuesToNotBeNullEl campo no puede estar vacíocolumnValuesToBeUniqueNo puede haber duplicadoscolumnValuesToBeBetweenEl valor debe estar entre un mínimo y un máximocolumnValuesToMatchRegexEl valor debe cumplir un patrón (ej: formato email)tableRowCountToBeBetweenLa tabla debe tener un número de filas en un rango
 
-### Cómo ver el detalle de un término
+Nombre: nombre descriptivo (ej: kcal_no_negativa)
+Descripción: explicación de la regla
+Parámetros según el tipo (Min/Max para Between, Regex para MatchRegex)
 
-Dentro del glosario, se puede hacer clic sobre cualquier término para ver su definición completa y su relación con las tablas o campos correspondientes.
 
-**Capturas recomendadas:**
-
-- Listado del glosario con los términos visibles.
-- Vista interior de un término, por ejemplo `Usuario activo` o `Valor nutricional`.
-
----
-
-## 5. Ver y gestionar las reglas de calidad
-
-Las reglas de calidad permiten comprobar si los datos cumplen ciertas condiciones mínimas. En NutriTracker son importantes porque la aplicación depende de datos correctos para calcular calorías, macronutrientes, objetivos diarios y evolución del usuario.
-
-### Cómo acceder a los tests de calidad
-
-Se puede acceder desde:
-
-```text
-Menú lateral izquierdo → Observabilidad → Casos de Prueba
-```
-
-También se puede entrar directamente desde:
-
-```text
-http://localhost:8585/data-quality/test-cases
-```
-
-Dentro de esta sección aparecen principalmente dos apartados:
-
-| Apartado | Descripción |
-|---|---|
-| Casos de Prueba | Lista de tests individuales configurados. |
-| Suites de Pruebas | Agrupaciones de varios tests de calidad. |
-
-### Resumen de calidad
-
-En la parte superior de Observabilidad aparece un resumen con el estado general de los tests.
-
-| Métrica | Valor |
-|---|---|
-| Total de pruebas configuradas | 6 |
-| Estado general | Tests ejecutados correctamente |
-| Tablas cubiertas | `user_account`, `product`, `intake` |
-| Cobertura de activos de datos | Aproximadamente 12,5% |
-
-### Casos de prueba configurados
-
-| Estado | Test Case | Tabla | Columna | Última ejecución |
-|---|---|---|---|---|
-| Éxito | `quantity_g_column_values_to_be_not_null` | `public.intake` | `quantity_g` | 28 abril 2026 |
-| Éxito | `kcal_column_values_to_be_between` | `public.product` | `kcal` | 28 abril 2026 |
-| Éxito | `email_column_values_to_match_regex` | `public.user_account` | `email` | 28 abril 2026 |
-| Éxito | `email_column_values_to_be_unique` | `public.user_account` | `email` | 28 abril 2026 |
-| Éxito | `created_at_no_fecha_futura` | `public.intake` | `created_at` | 28 abril 2026 |
-| Éxito | `email_no_nulo` | `public.user_account` | `email` | 28 abril 2026 |
-
-Estos tests cubren las principales dimensiones de calidad trabajadas en el informe.
-
-| Dimensión | Test que la cubre |
-|---|---|
-| Completitud | `quantity_g_column_values_to_be_not_null`, `email_no_nulo` |
-| Validez de formato | `email_column_values_to_match_regex` |
-| Validez de rango | `kcal_column_values_to_be_between` |
-| Unicidad | `email_column_values_to_be_unique` |
-| Actualidad | `created_at_no_fecha_futura` |
-
-**Captura recomendada:** vista de Observabilidad con los casos de prueba configurados y en estado correcto.
-
----
-
-## 6. Cómo ejecutar los tests de calidad
-
-Para ejecutar los tests de calidad:
-
-1. Ir a **Observabilidad** en el menú lateral izquierdo.
-2. Entrar en el listado de **Casos de Prueba**.
-3. Para ejecutar un test concreto, hacer clic en los tres puntos situados a la derecha del test.
-4. Seleccionar la opción **Ejecutar**.
-5. Para ejecutar un conjunto completo, entrar en **Suites de Pruebas** y ejecutar la suite correspondiente.
-
-El resultado de cada test aparece en la columna de estado.
-
-| Estado | Significado |
-|---|---|
-| Éxito | El dato cumple la regla definida. |
-| Fallido | Hay registros que no cumplen la regla. |
-| Sin ejecución | El test todavía no se ha ejecutado. |
-
----
-
-## 7. Cómo añadir un nuevo término al glosario
-
-Para añadir un nuevo término:
-
-1. Ir a **Gobernar → Glosario**.
-2. Abrir el glosario **Glosario NutriTracker**.
-3. Hacer clic en **Añadir término**.
-4. Rellenar los campos principales:
-   - **Nombre:** nombre del término, por ejemplo `Porción estándar`.
-   - **Descripción:** explicación clara del término.
-   - **Sinónimos:** opcional.
-   - **Términos relacionados:** opcional.
-5. Hacer clic en **Guardar**.
-
-Para vincular el término a una columna:
-
-1. Ir a **Explorar**.
-2. Abrir la tabla correspondiente.
-3. Seleccionar la columna relacionada.
-4. Añadir el término desde el panel de etiquetas o glosario.
-
----
-
-## 8. Cómo añadir una nueva regla de calidad
-
-Para añadir una nueva regla de calidad:
-
-1. Ir a **Observabilidad** en el menú lateral izquierdo.
-2. Hacer clic en **Añadir Caso de Prueba**.
-3. Seleccionar la tabla correspondiente.
-4. Seleccionar la columna sobre la que se quiere aplicar la regla.
-5. Elegir el tipo de prueba.
-6. Rellenar el nombre, descripción y parámetros necesarios.
-7. Guardar el Test Case.
-
-### Tipos de pruebas más usadas
-
-| Tipo de prueba | Cuándo usarla |
-|---|---|
-| `columnValuesToNotBeNull` | Cuando un campo no puede estar vacío. |
-| `columnValuesToBeUnique` | Cuando no puede haber valores duplicados. |
-| `columnValuesToBeBetween` | Cuando un valor debe estar dentro de un rango. |
-| `columnValuesToMatchRegex` | Cuando un campo debe cumplir un formato concreto, como un email. |
-| `tableRowCountToBeBetween` | Cuando una tabla debe tener un número de filas dentro de un rango esperado. |
-
-Ejemplo de regla:
-
-| Campo | Valor |
-|---|---|
-| Tabla | `nutritracker-db.nutri_tracker.public.product` |
-| Columna | `kcal` |
-| Tipo de prueba | `columnValuesToBeBetween` |
-| Nombre | `kcal_rango_valido` |
-| Descripción | Comprueba que las calorías de un producto estén dentro de un rango razonable. |
-
-Una vez guardado, el Test Case aparecerá en el listado de casos de prueba y se podrá ejecutar desde los tres puntos de opciones.
+Clic en "Guardar".
+El Test Case quedará en el listado de Casos de Prueba y podrás ejecutarlo con los tres puntos ⋮ → "Ejecutar".
