@@ -100,8 +100,8 @@ Los siguientes campos están etiquetados con PII.Sensitive en OpenMetadata:
 ### Cómo acceder
 
 1. En la barra lateral izquierda, clic en Gobernar.
-2. Selecciona Glosario (o Glossary).
-3. Verás el glosario "Glosario NutriTracker" con todos los términos definidos.
+2. Selecciona Glosario .
+3. Verás el glosario "Glosario Aplicacion Nutricion" con todos los términos definidos.
 
 ### Términos definidos
 
@@ -149,7 +149,7 @@ En la parte superior de Observabilidad aparece un resumen visual:
 
 | Métrica | Valor actual |
 |---|---|
-| Total de Pruebas | 6 (tras añadir los 2 pendientes) |
+| Total de Pruebas | 6 |
 | Success | 🟢 todos en verde |
 | Activos de Datos Saludables | 3 tablas cubiertas |
 | Cobertura de activos de datos | ~12.5% (se incrementa al añadir más tests) |
@@ -158,12 +158,12 @@ En la parte superior de Observabilidad aparece un resumen visual:
 
 | Estado | Nombre del Test Case | Tabla | Columna | Última ejecución |
 |---|---|---|---|---|
-| ✅ Éxito | quantity_g_column_values_to_be_not_null_bhd_s | public.intake | quantity_g | 28 abril 2026 |
-| ✅ Éxito | kcal_column_values_to_be_between_q_s_50 | public.product | kcal | 28 abril 2026 |
-| ✅ Éxito | email_column_values_to_match_regex_c_kil | public.user_account | email | 28 abril 2026 |
-| ✅ Éxito | email_column_values_to_be_unique_gu_9_y | public.user_account | email | 28 abril 2026 |
-| ✅ Éxito | created_at_no_fecha_futura | public.intake | created_at | 28 abril 2026 |
-| ✅ Éxito | email_no_nulo | public.user_account | email | 28 abril 2026 |
+| ✅ Éxito | quantity_g_column_values_to_be_not_null_bhd_s | public.intake | quantity_g | 30 abril 2026 |
+| ✅ Éxito | kcal_column_values_to_be_between_q_s_50 | public.product | kcal | 30 abril 2026 |
+| ✅ Éxito | email_column_values_to_match_regex_c_kil | public.user_account | email | 30 abril 2026 |
+| ✅ Éxito | email_column_values_to_be_unique_gu_9_y | public.user_account | email | 30 abril 2026 |
+| ✅ Éxito | created_at_no_fecha_futura | public.intake | created_at | 30 abril 2026 |
+| ✅ Éxito | email_no_nulo | public.user_account | email | 30 abril 2026 |
 
 Estos 6 Test Cases cubren las 5 dimensiones de calidad requeridas por la normativa:
 
@@ -196,7 +196,7 @@ Estos 6 Test Cases cubren las 5 dimensiones de calidad requeridas por la normati
 ## 7. Cómo añadir un nuevo término al glosario
 
 1. Ve a Gobernar → Glosario en el menú lateral izquierdo.
-2. Abre el glosario "Glosario NutriTracker".
+2. Abre el glosario "Glosario Aplicacion Nutricion".
 3. Clic en el botón "Añadir término" (esquina superior derecha).
 4. Rellena los campos:
 
